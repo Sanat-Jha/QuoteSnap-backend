@@ -27,6 +27,7 @@ from googleapiclient.errors import HttpError
 
 # AI Extraction Service
 from app.services.ai_email_extraction import extract_hardware_quotation_details
+from app.services.duckdb_service import DuckDBService
 
 # File processing utilities
 from utils import process_attachment
@@ -64,7 +65,8 @@ class GmailService:
             bool: True if authentication successful
         """
         SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                  'https://www.googleapis.com/auth/gmail.modify']
+                  'https://www.googleapis.com/auth/gmail.modify',
+                  'https://www.googleapis.com/auth/gmail.labels']
         
         creds = None
         token_path = self.token_path or 'token.json'
@@ -179,11 +181,26 @@ class GmailService:
                 new_emails = self._check_for_new_emails()
                 if new_emails:
                     logger.info(f"Found {len(new_emails)} new emails")
+                    
+                    # Initialize DuckDB service
+                    db_service = DuckDBService()
+                    if not db_service.connect():
+                        logger.error("Failed to connect to DuckDB")
+                        continue
+                    
+                    # Ensure table exists
+                    db_service.create_table()
+                    
                     for email_data in new_emails:
+                        gmail_id = email_data.get('gmail_id')
+                        
+                        # Check if email is already processed in database
+                        existing_record = db_service.get_extraction(gmail_id)
+                        
                         # Combine email body and attachment contents
                         combined_content = self._combine_email_content(email_data)
                         
-                        print(f"\n🔔 NEW EMAIL RECEIVED:")
+                        print(f"\n🔔 {'REPROCESSING' if existing_record else 'NEW'} EMAIL:")
                         print(f"Subject: {email_data.get('subject', 'No Subject')}")
                         print(f"From: {email_data.get('sender', 'Unknown')}")
                         print(f"Received: {email_data.get('received_at', 'Unknown')}")
@@ -195,11 +212,40 @@ class GmailService:
                         try:
                             extraction_result = extract_hardware_quotation_details(combined_content)
                             print(json.dumps(extraction_result, indent=2))
+                            
+                            # Save to database
+                            if existing_record:
+                                success = db_service.update_extraction(gmail_id, extraction_result)
+                                if success:
+                                    print(f"📝 Updated existing database record")
+                                else:
+                                    print(f"❌ Failed to update database record")
+                            else:
+                                record_id = db_service.insert_extraction(email_data, extraction_result)
+                                if record_id:
+                                    print(f"💾 Saved to database with ID: {record_id}")
+                                else:
+                                    print(f"❌ Failed to save to database")
+                            
+                            # Apply appropriate Gmail label
+                            if extraction_result.get("status") == "NOT_VALID":
+                                # Irrelevant email - grey label
+                                self.add_label_to_email(gmail_id, "SnapQuote-Irrelevant", "grey")
+                                print(f"🏷️ Applied label: SnapQuote-Irrelevant (Grey)")
+                            else:
+                                # Valid quotation - green label
+                                self.add_label_to_email(gmail_id, "SnapQuote-Fetched", "green")
+                                print(f"🏷️ Applied label: SnapQuote-Fetched (Green)")
+                                
                         except Exception as e:
                             print(f"❌ AI extraction failed: {str(e)}")
                             logger.error(f"AI extraction error: {str(e)}")
+                        
                         print("=" * 80)
-                        print("✅ END OF AI PROCESSING\n")
+                        print("✅ END OF PROCESSING\n")
+                    
+                    # Close database connection
+                    db_service.disconnect()
                 
                 self.last_check_time = datetime.now()
                 time.sleep(check_interval)
@@ -215,8 +261,8 @@ class GmailService:
             List[Dict]: List of new email data
         """
         try:
-            # Build query for recent emails
-            query = "in:inbox"
+            # Build query for recent emails WITHOUT SnapQuote labels
+            query = "in:inbox -label:SnapQuote-Fetched -label:SnapQuote-Irrelevant"
             if self.last_check_time:
                 # Get emails newer than last check (within last hour for safety)
                 hours_ago = max(1, int((datetime.now() - self.last_check_time).total_seconds() / 3600) + 1)
@@ -554,3 +600,87 @@ class GmailService:
             'emails_processed_today': 0,  # TODO: Get from database
             'last_error': None
         }
+    
+    def create_label_if_not_exists(self, label_name: str, color: str = 'grey') -> Optional[str]:
+        """
+        Create Gmail label if it doesn't exist.
+        
+        Args:
+            label_name (str): Name of the label
+            color (str): Color for the label ('green', 'grey', etc.)
+            
+        Returns:
+            Optional[str]: Label ID if successful, None otherwise
+        """
+        if not self.service:
+            logger.error("Gmail service not authenticated")
+            return None
+        
+        try:
+            # Check if label already exists
+            labels = self.service.users().labels().list(userId='me').execute()
+            for label in labels.get('labels', []):
+                if label['name'] == label_name:
+                    return label['id']
+            
+            # Create new label with color
+            color_map = {
+                'green': {'backgroundColor': '#16a766', 'textColor': '#ffffff'},
+                'grey': {'backgroundColor': '#999999', 'textColor': '#ffffff'},
+                'blue': {'backgroundColor': '#4285f4', 'textColor': '#ffffff'},
+                'red': {'backgroundColor': '#ea4335', 'textColor': '#ffffff'}
+            }
+            
+            label_object = {
+                'name': label_name,
+                'labelListVisibility': 'labelShow',
+                'messageListVisibility': 'show',
+                'color': color_map.get(color, color_map['grey'])
+            }
+            
+            created_label = self.service.users().labels().create(
+                userId='me', body=label_object
+            ).execute()
+            
+            logger.info(f"Created Gmail label: {label_name} with ID: {created_label['id']}")
+            return created_label['id']
+            
+        except Exception as e:
+            logger.error(f"Error creating Gmail label: {str(e)}")
+            return None
+    
+    def add_label_to_email(self, email_id: str, label_name: str, color: str = 'grey') -> bool:
+        """
+        Add label to an email.
+        
+        Args:
+            email_id (str): Gmail message ID
+            label_name (str): Name of the label to add
+            color (str): Color for the label if it needs to be created
+            
+        Returns:
+            bool: True if label added successfully
+        """
+        if not self.service:
+            logger.error("Gmail service not authenticated")
+            return False
+        
+        try:
+            # Get or create label
+            label_id = self.create_label_if_not_exists(label_name, color)
+            if not label_id:
+                return False
+            
+            # Add label to email
+            self.service.users().messages().modify(
+                userId='me',
+                id=email_id,
+                body={'addLabelIds': [label_id]}
+            ).execute()
+            
+            logger.info(f"Added label '{label_name}' to email {email_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding label to email: {str(e)}")
+            return False
