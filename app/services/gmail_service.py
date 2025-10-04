@@ -11,12 +11,18 @@ from datetime import datetime, timedelta
 import threading
 import time
 import json
+import os
+import base64
+import email
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-# Gmail API imports (will be implemented)
-# from google.auth.transport.requests import Request
-# from google.oauth2.credentials import Credentials
-# from google_auth_oauthlib.flow import InstalledAppFlow
-# from googleapiclient.discovery import build
+# Gmail API imports
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
@@ -48,25 +54,53 @@ class GmailService:
         Authenticate with Gmail API using OAuth 2.0.
         
         Returns:
-            bool: True if authentication successful, False otherwise
+            bool: True if authentication successful
         """
-        # TODO: Implement Gmail API authentication
-        # - Load existing credentials if available
-        # - Refresh tokens if expired
-        # - Initialize new OAuth flow if needed
-        # - Build Gmail API service object
-        # - Validate API access with test call
+        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                  'https://www.googleapis.com/auth/gmail.modify']
         
-        logger.info("Authenticating with Gmail API")
+        creds = None
+        token_path = self.token_path or 'token.json'
+        
+        # The file token.json stores the user's access and refresh tokens.
+        if os.path.exists(token_path):
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except Exception as e:
+                    logger.error(f"Failed to refresh credentials: {str(e)}")
+                    return False
+            else:
+                if not self.credentials_path or not os.path.exists(self.credentials_path):
+                    logger.error("Gmail credentials file not found")
+                    return False
+                
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_path, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                except Exception as e:
+                    logger.error(f"Failed to authenticate with Gmail: {str(e)}")
+                    return False
+            
+            # Save the credentials for the next run
+            try:
+                with open(token_path, 'w') as token:
+                    token.write(creds.to_json())
+            except Exception as e:
+                logger.error(f"Failed to save token: {str(e)}")
         
         try:
-            # Mock authentication for now
-            self.credentials = "mock_credentials"
-            self.service = "mock_service"
+            self.service = build('gmail', 'v1', credentials=creds)
+            self.credentials = creds
             logger.info("Gmail API authentication successful")
             return True
         except Exception as e:
-            logger.error(f"Gmail API authentication failed: {str(e)}")
+            logger.error(f"Failed to build Gmail service: {str(e)}")
             return False
     
     def start_monitoring(self, check_interval: int = 300) -> bool:
@@ -79,12 +113,6 @@ class GmailService:
         Returns:
             bool: True if monitoring started successfully
         """
-        # TODO: Implement email monitoring
-        # - Start background thread for periodic checking
-        # - Set up email filtering criteria
-        # - Handle monitoring errors gracefully
-        # - Log monitoring activity
-        
         if self.monitoring_active:
             logger.warning("Email monitoring is already active")
             return True
@@ -94,6 +122,14 @@ class GmailService:
             return False
         
         self.monitoring_active = True
+        self.monitoring_thread = threading.Thread(
+            target=self._monitoring_loop,
+            args=(check_interval,),
+            daemon=True
+        )
+        self.monitoring_thread.start()
+        logger.info(f"Gmail monitoring started with {check_interval}s interval")
+        return True
         self.monitoring_thread = threading.Thread(
             target=self._monitoring_loop,
             args=(check_interval,),
@@ -111,11 +147,6 @@ class GmailService:
         Returns:
             bool: True if monitoring stopped successfully
         """
-        # TODO: Implement monitoring stop
-        # - Gracefully stop monitoring thread
-        # - Clean up resources
-        # - Log final statistics
-        
         if not self.monitoring_active:
             logger.warning("Email monitoring is not active")
             return True
@@ -134,17 +165,21 @@ class GmailService:
         Args:
             check_interval (int): Interval between checks in seconds
         """
-        # TODO: Implement monitoring loop
-        # - Periodically check for new emails
-        # - Process new emails when found
-        # - Handle API rate limits
-        # - Log monitoring activity
-        
         logger.info("Email monitoring loop started")
         
         while self.monitoring_active:
             try:
-                self._check_for_new_emails()
+                new_emails = self._check_for_new_emails()
+                if new_emails:
+                    logger.info(f"Found {len(new_emails)} new emails")
+                    for email_data in new_emails:
+                        print(f"\n🔔 NEW EMAIL RECEIVED:")
+                        print(f"Subject: {email_data.get('subject', 'No Subject')}")
+                        print(f"From: {email_data.get('sender', 'Unknown')}")
+                        print(f"Received: {email_data.get('received_at', 'Unknown')}")
+                        print(f"Content Preview: {email_data.get('body_text', '')[:200]}...")
+                        print("=" * 50)
+                
                 self.last_check_time = datetime.now()
                 time.sleep(check_interval)
             except Exception as e:
@@ -154,14 +189,48 @@ class GmailService:
     def _check_for_new_emails(self):
         """
         Check Gmail inbox for new emails since last check.
-        """
-        # TODO: Implement new email checking
-        # - Query Gmail API for new emails
-        # - Filter emails based on criteria
-        # - Extract email metadata
-        # - Trigger processing for new emails
         
-        logger.debug("Checking for new emails")
+        Returns:
+            List[Dict]: List of new email data
+        """
+        try:
+            # Build query for recent emails
+            query = "in:inbox"
+            if self.last_check_time:
+                # Get emails newer than last check (within last hour for safety)
+                hours_ago = max(1, int((datetime.now() - self.last_check_time).total_seconds() / 3600) + 1)
+                query += f" newer_than:{hours_ago}h"
+            else:
+                # First run, get emails from last 1 hour
+                query += " newer_than:1h"
+            
+            logger.debug(f"Searching emails with query: {query}")
+            
+            # Search for emails
+            results = self.service.users().messages().list(
+                userId='me', q=query, maxResults=10
+            ).execute()
+            
+            messages = results.get('messages', [])
+            new_emails = []
+            
+            for message in messages:
+                try:
+                    email_data = self.get_email_details(message['id'])
+                    if email_data:
+                        new_emails.append(email_data)
+                except Exception as e:
+                    logger.error(f"Error processing email {message['id']}: {str(e)}")
+                    continue
+            
+            return new_emails
+            
+        except HttpError as e:
+            logger.error(f"Gmail API error: {str(e)}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error checking emails: {str(e)}")
+            return []
         # Mock implementation - no actual checking yet
         pass
     
@@ -187,9 +256,78 @@ class GmailService:
         # Mock response for now
         return []
     
+    def get_email_details(self, email_id: str) -> Optional[Dict]:
+        """
+        Get detailed information about a specific email.
+        
+        Args:
+            email_id (str): Gmail message ID
+            
+        Returns:
+            Optional[Dict]: Email details or None if not found
+        """
+        if not self.service:
+            logger.error("Gmail service not authenticated")
+            return None
+        
+        try:
+            # Get the email
+            message = self.service.users().messages().get(
+                userId='me', id=email_id, format='full'
+            ).execute()
+            
+            # Extract headers
+            headers = {}
+            for header in message['payload'].get('headers', []):
+                headers[header['name'].lower()] = header['value']
+            
+            # Extract body
+            body_text = ""
+            body_html = ""
+            
+            def extract_body(part):
+                nonlocal body_text, body_html
+                if part.get('mimeType') == 'text/plain':
+                    data = part['body'].get('data', '')
+                    if data:
+                        body_text = base64.urlsafe_b64decode(data).decode('utf-8')
+                elif part.get('mimeType') == 'text/html':
+                    data = part['body'].get('data', '')
+                    if data:
+                        body_html = base64.urlsafe_b64decode(data).decode('utf-8')
+                elif 'parts' in part:
+                    for subpart in part['parts']:
+                        extract_body(subpart)
+            
+            # Handle both simple and multipart messages
+            if 'parts' in message['payload']:
+                for part in message['payload']['parts']:
+                    extract_body(part)
+            else:
+                extract_body(message['payload'])
+            
+            # Convert timestamp
+            timestamp = int(message['internalDate']) / 1000
+            received_at = datetime.fromtimestamp(timestamp)
+            
+            return {
+                'gmail_id': email_id,
+                'subject': headers.get('subject', ''),
+                'sender': headers.get('from', ''),
+                'recipient': headers.get('to', ''),
+                'received_at': received_at.isoformat(),
+                'body_text': body_text,
+                'body_html': body_html,
+                'attachments': []  # TODO: Extract attachments if needed
+            }
+            
+        except Exception as e:
+            logger.error(f"Error retrieving email details: {str(e)}")
+            return None
+
     def get_email_content(self, email_id: str) -> Optional[Dict]:
         """
-        Get full content of a specific email.
+        Get full content of a specific email (alias for get_email_details).
         
         Args:
             email_id (str): Gmail message ID
@@ -197,33 +335,7 @@ class GmailService:
         Returns:
             Optional[Dict]: Email content data or None if not found
         """
-        # TODO: Implement email content retrieval
-        # - Fetch full email using Gmail API
-        # - Extract headers, body, and attachments
-        # - Handle different content types (HTML, plain text)
-        # - Return structured email content
-        
-        logger.info(f"Retrieving email content for ID: {email_id}")
-        
-        if not self.service:
-            logger.error("Gmail service not authenticated")
-            return None
-        
-        try:
-            # Mock email content for now
-            return {
-                'id': email_id,
-                'subject': 'Mock Email Subject',
-                'sender': 'sender@example.com',
-                'recipient': 'recipient@example.com',
-                'date': datetime.now().isoformat(),
-                'body_text': 'Mock email body content',
-                'body_html': '<p>Mock email body content</p>',
-                'attachments': []
-            }
-        except Exception as e:
-            logger.error(f"Error retrieving email content: {str(e)}")
-            return None
+        return self.get_email_details(email_id)
     
     def get_email_attachments(self, email_id: str) -> List[Dict]:
         """

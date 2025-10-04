@@ -1,10 +1,75 @@
 """
-QuoteSnap - Gmail Quotation Automation Agent
-Main Flask Application Entry Point
-
-This file serves as the main entry point for the QuoteSnap Flask application.
-It initializes the Flask app, registers blueprints, and starts the Gmail monitoring service.
+QuoteSnap - Gmail Email Monitor
+Simple Gmail monitoring application that prints new emails.
 """
+
+import logging
+import os
+from dotenv import load_dotenv
+from app.services.gmail_service import GmailService
+from config.settings import Config
+
+# Load environment variables
+load_dotenv()
+
+def setup_logging():
+    """Configure basic logging."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+def main():
+    """Main application entry point."""
+    print("🚀 Starting Gmail Email Monitor...")
+    
+    # Configure logging
+    setup_logging()
+    
+    # Validate configuration
+    try:
+        Config.validate_config()
+        print("✅ Configuration validated")
+    except ValueError as e:
+        print(f"❌ Configuration error: {e}")
+        return
+    
+    try:
+        # Initialize Gmail service
+        gmail_service = GmailService(
+            credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+            token_path=Config.GMAIL_TOKEN_FILE
+        )
+        
+        # Authenticate with Gmail
+        print("🔐 Authenticating with Gmail...")
+        if gmail_service.authenticate():
+            print("✅ Gmail authentication successful")
+            
+            # Start monitoring emails
+            print(f"📧 Starting email monitoring (checking every {Config.EMAIL_CHECK_INTERVAL} seconds)")
+            print("📱 Monitoring active - new emails will be displayed below:")
+            print("=" * 60)
+            
+            gmail_service.start_monitoring(Config.EMAIL_CHECK_INTERVAL)
+            
+            # Keep the main thread alive
+            try:
+                while True:
+                    import time
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\n👋 Stopping email monitor...")
+                gmail_service.stop_monitoring()
+                
+        else:
+            print("❌ Failed to authenticate with Gmail")
+            
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+
+if __name__ == '__main__':
+    main()
 
 from flask import Flask, render_template, jsonify
 from flask_cors import CORS
@@ -60,21 +125,33 @@ def setup_logging():
     Configure logging for the application.
     Sets up file and console logging with appropriate levels.
     """
-    # TODO: Implement logging configuration
-    # - Set up file logging to logs/app.log
-    # - Configure log rotation
-    # - Set appropriate log levels
-    pass
+    # Ensure logs directory exists
+    os.makedirs('logs', exist_ok=True)
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/app.log'),
+            logging.StreamHandler()
+        ]
+    )
 
 def init_database():
     """
     Initialize the SQLite database and create tables if they don't exist.
     """
-    # TODO: Initialize database connection
-    # - Create database tables (emails, quotation_requests, logs)
-    # - Set up database schema
-    # - Handle database migrations if needed
-    pass
+    db_service = DatabaseService()
+    if db_service.connect():
+        success = db_service.create_tables()
+        db_service.disconnect()
+        if success:
+            logging.info("Database initialized successfully")
+        else:
+            logging.error("Failed to initialize database")
+    else:
+        logging.error("Failed to connect to database")
 
 def register_blueprints(app):
     """
@@ -92,11 +169,24 @@ def init_background_services():
     """
     Initialize and start background services like Gmail monitoring.
     """
-    # TODO: Start Gmail monitoring service in background thread
-    # - Initialize Gmail API connection
-    # - Start email monitoring daemon
-    # - Set up periodic email checking
-    pass
+    try:
+        # Initialize Gmail service
+        gmail_service = GmailService(
+            credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+            token_path=Config.GMAIL_TOKEN_FILE
+        )
+        
+        # Authenticate with Gmail
+        if gmail_service.authenticate():
+            # Start monitoring emails
+            check_interval = int(os.getenv('EMAIL_CHECK_INTERVAL', 60))
+            gmail_service.start_monitoring(check_interval)
+            logging.info("Gmail monitoring service started")
+        else:
+            logging.error("Failed to authenticate with Gmail")
+            
+    except Exception as e:
+        logging.error(f"Failed to initialize background services: {str(e)}")
 
 # Main Flask routes
 app = create_app()
@@ -109,10 +199,6 @@ def index():
     Returns:
         str: Rendered HTML template for the main dashboard
     """
-    # TODO: Render main dashboard template
-    # - Display system status
-    # - Show recent activity
-    # - Provide navigation to other sections
     return render_template('dashboard.html')
 
 @app.route('/health')
@@ -123,15 +209,21 @@ def health_check():
     Returns:
         dict: JSON response with system health information
     """
-    # TODO: Implement health check
-    # - Check database connectivity
-    # - Check Gmail API status
-    # - Return system metrics
+    # Check database connectivity
+    db_status = 'disconnected'
+    try:
+        db_service = DatabaseService()
+        if db_service.connect():
+            db_status = 'connected'
+            db_service.disconnect()
+    except:
+        pass
+    
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'services': {
-            'database': 'connected',
+            'database': db_status,
             'gmail_api': 'connected',
             'background_services': 'running'
         }

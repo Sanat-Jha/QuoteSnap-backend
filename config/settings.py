@@ -1,9 +1,41 @@
 """
 Configuration settings for QuoteSnap application.
-
-This module contains all configuration settings for different environments
-(development, production, testing) and handles environment variable loading.
 """
+
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+class Config:
+    """
+    Base configuration class with common settings.
+    """
+    
+    # Flask Configuration
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
+    # Gmail API Configuration
+    GMAIL_CREDENTIALS_FILE = os.environ.get('GMAIL_CREDENTIALS_FILE') or 'credentials.json'
+    GMAIL_TOKEN_FILE = os.environ.get('GMAIL_TOKEN_FILE') or 'token.json'
+    GMAIL_SCOPES = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify'
+    ]
+    
+    # Email Monitoring Configuration
+    EMAIL_CHECK_INTERVAL = int(os.environ.get('EMAIL_CHECK_INTERVAL', '60'))
+    
+    @staticmethod
+    def validate_config():
+        """
+        Validate that all required configuration values are present.
+        """
+        # Only check if credentials file exists
+        if not os.path.exists(Config.GMAIL_CREDENTIALS_FILE):
+            raise ValueError(f"Gmail credentials file not found: {Config.GMAIL_CREDENTIALS_FILE}")
 
 import os
 from dotenv import load_dotenv
@@ -24,9 +56,8 @@ class Config:
     DATABASE_URL = os.environ.get('DATABASE_URL') or 'sqlite:///database/quotesnap.db'
     
     # Gmail API Configuration
-    GMAIL_CLIENT_ID = os.environ.get('GMAIL_CLIENT_ID')
-    GMAIL_CLIENT_SECRET = os.environ.get('GMAIL_CLIENT_SECRET')
-    GMAIL_REDIRECT_URI = os.environ.get('GMAIL_REDIRECT_URI') or 'http://localhost:5000/auth/callback'
+    GMAIL_CREDENTIALS_FILE = os.environ.get('GMAIL_CREDENTIALS_FILE') or 'credentials.json'
+    GMAIL_TOKEN_FILE = os.environ.get('GMAIL_TOKEN_FILE') or 'token.json'
     GMAIL_SCOPES = [
         'https://www.googleapis.com/auth/gmail.readonly',
         'https://www.googleapis.com/auth/gmail.modify'
@@ -59,19 +90,29 @@ class Config:
         Raises:
             ValueError: If required configuration is missing
         """
-        required_vars = [
-            'GMAIL_CLIENT_ID',
-            'GMAIL_CLIENT_SECRET',
+        required_files = [
+            ('GMAIL_CREDENTIALS_FILE', 'credentials.json')
+        ]
+        
+        required_env_vars = [
             'OPENAI_API_KEY'
         ]
         
-        missing_vars = []
-        for var in required_vars:
-            if not os.environ.get(var):
-                missing_vars.append(var)
+        missing_items = []
         
-        if missing_vars:
-            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        # Check required files exist
+        for env_var, default_path in required_files:
+            file_path = os.environ.get(env_var, default_path)
+            if not os.path.exists(file_path):
+                missing_items.append(f"File '{file_path}' (from {env_var})")
+        
+        # Check required environment variables
+        for var in required_env_vars:
+            if not os.environ.get(var):
+                missing_items.append(f"Environment variable '{var}'")
+        
+        if missing_items:
+            raise ValueError(f"Missing required configuration: {', '.join(missing_items)}")
 
 class DevelopmentConfig(Config):
     """
