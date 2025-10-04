@@ -7,11 +7,12 @@ import logging
 import os
 import threading
 from datetime import datetime
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from app.services.gmail_service import GmailService
 from app.services.duckdb_service import DuckDBService
+from app.services.excel_generation_service import ExcelGenerationService
 from config.settings import Config
 
 # Load environment variables
@@ -159,6 +160,117 @@ def create_flask_app():
             'message': 'SnapQuote API is running',
             'timestamp': datetime.now().isoformat()
         })
+    
+    @app.route('/api/quotation/generate/<gmail_id>', methods=['POST'])
+    def generate_quotation(gmail_id: str):
+        """
+        Generate Excel quotation file from stored email extraction data.
+        
+        Args:
+            gmail_id (str): Gmail message ID
+            
+        Returns:
+            JSON response with download link or file content
+        """
+        try:
+            # Get email data from database
+            db_service = DuckDBService()
+            if not db_service.connect():
+                return jsonify({'error': 'Failed to connect to database'}), 500
+            
+            extraction_data = db_service.get_extraction(gmail_id)
+            db_service.disconnect()
+            
+            if not extraction_data:
+                return jsonify({'error': f'Email with gmail_id {gmail_id} not found'}), 404
+            
+            # Check if it's a valid quotation (not irrelevant)
+            if extraction_data.get('extraction_status') != 'VALID':
+                return jsonify({
+                    'error': 'Cannot generate quotation for irrelevant email',
+                    'status': extraction_data.get('extraction_status')
+                }), 400
+            
+            # Generate Excel file
+            excel_service = ExcelGenerationService()
+            file_path = excel_service.generate_quotation_excel(gmail_id, extraction_data)
+            
+            if not file_path:
+                return jsonify({'error': 'Failed to generate Excel file'}), 500
+            
+            # Get file information
+            file_info = excel_service.get_file_info(file_path)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Quotation Excel file generated successfully',
+                'file_info': file_info,
+                'download_url': f'/api/quotation/download/{os.path.basename(file_path)}',
+                'gmail_id': gmail_id,
+                'extraction_data': {
+                    'subject': extraction_data.get('subject'),
+                    'sender': extraction_data.get('sender'),
+                    'extraction_status': extraction_data.get('extraction_status'),
+                    'processed_at': extraction_data.get('processed_at')
+                }
+            })
+            
+        except Exception as e:
+            logging.error(f"Quotation generation error: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/quotation/download/<filename>', methods=['GET'])
+    def download_quotation(filename: str):
+        """
+        Download generated quotation Excel file.
+        
+        Args:
+            filename (str): Filename to download
+            
+        Returns:
+            File download
+        """
+        try:
+            file_path = os.path.join('generated', filename)
+            
+            if not os.path.exists(file_path):
+                return jsonify({'error': 'File not found'}), 404
+            
+            # Validate filename to prevent directory traversal
+            if not filename.endswith('.xlsx') or '..' in filename:
+                return jsonify({'error': 'Invalid filename'}), 400
+            
+            return send_file(
+                file_path,
+                as_attachment=True,
+                download_name=filename,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            
+        except Exception as e:
+            logging.error(f"File download error: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/template/analyze', methods=['GET'])
+    def analyze_template():
+        """
+        Analyze the Excel template structure.
+        
+        Returns:
+            JSON response with template analysis
+        """
+        try:
+            excel_service = ExcelGenerationService()
+            analysis = excel_service.analyze_template()
+            
+            return jsonify({
+                'success': True,
+                'analysis': analysis
+            })
+            
+        except Exception as e:
+            logging.error(f"Template analysis error: {str(e)}")
+            return jsonify({'error': str(e)}), 500
     
     return app
 
