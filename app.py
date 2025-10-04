@@ -161,16 +161,16 @@ def create_flask_app():
             'timestamp': datetime.now().isoformat()
         })
     
-    @app.route('/api/quotation/generate/<gmail_id>', methods=['POST'])
+    @app.route('/api/quotation/generate/<gmail_id>', methods=['GET'])
     def generate_quotation(gmail_id: str):
         """
-        Generate Excel quotation file from stored email extraction data.
+        Generate and download Excel quotation file from stored email extraction data.
         
         Args:
             gmail_id (str): Gmail message ID
             
         Returns:
-            JSON response with download link or file content
+            Excel file for immediate download
         """
         try:
             # Get email data from database
@@ -198,22 +198,24 @@ def create_flask_app():
             if not file_path:
                 return jsonify({'error': 'Failed to generate Excel file'}), 500
             
-            # Get file information
-            file_info = excel_service.get_file_info(file_path)
+            # Validate file exists
+            if not os.path.exists(file_path):
+                return jsonify({'error': 'Generated file not found'}), 500
             
-            return jsonify({
-                'success': True,
-                'message': 'Quotation Excel file generated successfully',
-                'file_info': file_info,
-                'download_url': f'/api/quotation/download/{os.path.basename(file_path)}',
-                'gmail_id': gmail_id,
-                'extraction_data': {
-                    'subject': extraction_data.get('subject'),
-                    'sender': extraction_data.get('sender'),
-                    'extraction_status': extraction_data.get('extraction_status'),
-                    'processed_at': extraction_data.get('processed_at')
-                }
-            })
+            # Create a descriptive filename for download
+            subject = extraction_data.get('subject', 'quotation')[:30]  # Limit length
+            # Clean filename - remove invalid characters
+            clean_subject = "".join(c for c in subject if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            download_filename = f"Quotation_{clean_subject}_{timestamp}.xlsx"
+            
+            # Return file for immediate download
+            return send_file(
+                file_path,
+                as_attachment=True,
+                download_name=download_filename,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
             
         except Exception as e:
             logging.error(f"Quotation generation error: {str(e)}")
@@ -344,7 +346,7 @@ def main():
         print("=" * 60)
         
         # Run Flask app
-        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
         
     except KeyboardInterrupt:
         print("\n👋 Shutting down SnapQuote...")
