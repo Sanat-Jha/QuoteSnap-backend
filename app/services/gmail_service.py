@@ -16,6 +16,7 @@ import base64
 import email
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import json
 
 # Gmail API imports
 from google.auth.transport.requests import Request
@@ -23,6 +24,12 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+# AI Extraction Service
+from app.services.ai_email_extraction import extract_hardware_quotation_details
+
+# File processing utilities
+from utils import process_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -173,12 +180,26 @@ class GmailService:
                 if new_emails:
                     logger.info(f"Found {len(new_emails)} new emails")
                     for email_data in new_emails:
+                        # Combine email body and attachment contents
+                        combined_content = self._combine_email_content(email_data)
+                        
                         print(f"\n🔔 NEW EMAIL RECEIVED:")
                         print(f"Subject: {email_data.get('subject', 'No Subject')}")
                         print(f"From: {email_data.get('sender', 'Unknown')}")
                         print(f"Received: {email_data.get('received_at', 'Unknown')}")
-                        print(f"Content Preview: {email_data.get('body_text', '')[:200]}...")
-                        print("=" * 50)
+                        print(f"Attachments: {len(email_data.get('attachments', []))} files")
+                        
+                        # Process with AI extraction
+                        print(f"\n🤖 AI EXTRACTION RESULT:")
+                        print("=" * 80)
+                        try:
+                            extraction_result = extract_hardware_quotation_details(combined_content)
+                            print(json.dumps(extraction_result, indent=2))
+                        except Exception as e:
+                            print(f"❌ AI extraction failed: {str(e)}")
+                            logger.error(f"AI extraction error: {str(e)}")
+                        print("=" * 80)
+                        print("✅ END OF AI PROCESSING\n")
                 
                 self.last_check_time = datetime.now()
                 time.sleep(check_interval)
@@ -258,7 +279,7 @@ class GmailService:
     
     def get_email_details(self, email_id: str) -> Optional[Dict]:
         """
-        Get detailed information about a specific email.
+        Get detailed information about a specific email including attachments.
         
         Args:
             email_id (str): Gmail message ID
@@ -281,12 +302,14 @@ class GmailService:
             for header in message['payload'].get('headers', []):
                 headers[header['name'].lower()] = header['value']
             
-            # Extract body
+            # Extract body and attachments
             body_text = ""
             body_html = ""
+            attachments = []
             
-            def extract_body(part):
-                nonlocal body_text, body_html
+            def extract_parts(part):
+                nonlocal body_text, body_html, attachments
+                
                 if part.get('mimeType') == 'text/plain':
                     data = part['body'].get('data', '')
                     if data:
@@ -297,14 +320,35 @@ class GmailService:
                         body_html = base64.urlsafe_b64decode(data).decode('utf-8')
                 elif 'parts' in part:
                     for subpart in part['parts']:
-                        extract_body(subpart)
+                        extract_parts(subpart)
+                else:
+                    # Check if this part is an attachment
+                    filename = part.get('filename', '')
+                    if filename and part['body'].get('attachmentId'):
+                        # This is an attachment
+                        attachment_info = {
+                            'filename': filename,
+                            'mimeType': part.get('mimeType', ''),
+                            'size': part['body'].get('size', 0),
+                            'attachmentId': part['body']['attachmentId']
+                        }
+                        attachments.append(attachment_info)
             
             # Handle both simple and multipart messages
             if 'parts' in message['payload']:
                 for part in message['payload']['parts']:
-                    extract_body(part)
+                    extract_parts(part)
             else:
-                extract_body(message['payload'])
+                extract_parts(message['payload'])
+            
+            # Process attachments and get their content
+            attachment_contents = []
+            for attachment in attachments:
+                if self._is_supported_file(attachment['filename']):
+                    content = self._get_attachment_content(email_id, attachment['attachmentId'])
+                    if content:
+                        processed_content = process_attachment(attachment['filename'], content)
+                        attachment_contents.append(f"\n\n---\n# Attachment: {attachment['filename']}\n\n{processed_content}")
             
             # Convert timestamp
             timestamp = int(message['internalDate']) / 1000
@@ -318,12 +362,87 @@ class GmailService:
                 'received_at': received_at.isoformat(),
                 'body_text': body_text,
                 'body_html': body_html,
-                'attachments': []  # TODO: Extract attachments if needed
+                'attachments': attachments,
+                'attachment_contents': attachment_contents
             }
             
         except Exception as e:
             logger.error(f"Error retrieving email details: {str(e)}")
             return None
+    
+    def _is_supported_file(self, filename: str) -> bool:
+        """Check if the file type is supported for processing."""
+        supported_extensions = ['.pdf', '.xlsx', '.xls', '.docx', '.doc']
+        return any(filename.lower().endswith(ext) for ext in supported_extensions)
+    
+    def _get_attachment_content(self, email_id: str, attachment_id: str) -> Optional[bytes]:
+        """Get the content of an attachment."""
+        try:
+            attachment = self.service.users().messages().attachments().get(
+                userId='me', messageId=email_id, id=attachment_id
+            ).execute()
+            
+            data = attachment.get('data')
+            if data:
+                return base64.urlsafe_b64decode(data)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error retrieving attachment content: {str(e)}")
+            return None
+    
+    def _combine_email_content(self, email_data: Dict) -> str:
+        """
+        Combine email body and attachment contents into one markdown string.
+        
+        Args:
+            email_data (Dict): Email data containing body and attachments
+            
+        Returns:
+            str: Combined content in markdown format
+        """
+        combined = []
+        
+        # Add email metadata
+        combined.append("# Email Content\n")
+        combined.append(f"**Subject:** {email_data.get('subject', 'No Subject')}\n")
+        combined.append(f"**From:** {email_data.get('sender', 'Unknown')}\n")
+        combined.append(f"**To:** {email_data.get('recipient', 'Unknown')}\n")
+        combined.append(f"**Received:** {email_data.get('received_at', 'Unknown')}\n\n")
+        
+        # Add email body
+        body_text = email_data.get('body_text', '').strip()
+        body_html = email_data.get('body_html', '').strip()
+        
+        if body_text:
+            combined.append("## Email Body\n\n")
+            combined.append(f"{body_text}\n\n")
+        elif body_html:
+            combined.append("## Email Body (HTML)\n\n")
+            # Basic HTML to text conversion (remove tags)
+            import re
+            clean_html = re.sub('<.*?>', '', body_html)
+            combined.append(f"{clean_html}\n\n")
+        else:
+            combined.append("## Email Body\n\n*[No text content]*\n\n")
+        
+        # Add attachment contents
+        attachment_contents = email_data.get('attachment_contents', [])
+        if attachment_contents:
+            combined.append("# Attachments\n")
+            for content in attachment_contents:
+                combined.append(content)
+        else:
+            attachments = email_data.get('attachments', [])
+            if attachments:
+                combined.append("# Attachments\n\n")
+                for attachment in attachments:
+                    filename = attachment.get('filename', 'Unknown')
+                    if not self._is_supported_file(filename):
+                        combined.append(f"## Attachment: {filename}\n\n")
+                        combined.append("*[Unsupported file type - content not extracted]*\n\n")
+        
+        return "".join(combined)
 
     def get_email_content(self, email_id: str) -> Optional[Dict]:
         """
