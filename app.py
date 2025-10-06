@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from datetime import datetime
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify, send_file, render_template
 from flask_cors import CORS
 from dotenv import load_dotenv
 from app.services.gmail_service import GmailService
@@ -29,6 +29,11 @@ def create_flask_app():
     """Create and configure Flask application."""
     app = Flask(__name__)
     CORS(app)
+    
+    @app.route('/')
+    def dashboard():
+        """Serve the main dashboard page."""
+        return render_template('dashboard.html')
     
     @app.route('/api/emails', methods=['GET'])
     def get_all_emails():
@@ -274,6 +279,107 @@ def create_flask_app():
             logging.error(f"Template analysis error: {str(e)}")
             return jsonify({'error': str(e)}), 500
     
+    @app.route('/api/monitoring/status', methods=['GET'])
+    def get_monitoring_status():
+        """
+        Get current Gmail monitoring status and statistics.
+        
+        Returns:
+            JSON response with monitoring status
+        """
+        try:
+            # Get today's email count from database
+            db_service = DuckDBService()
+            if db_service.connect():
+                today = datetime.now().strftime('%Y-%m-%d')
+                today_count_result = db_service.connection.execute(
+                    "SELECT COUNT(*) FROM email_extractions WHERE DATE(created_at) = ?", 
+                    [today]
+                ).fetchone()
+                emails_processed_today = today_count_result[0] if today_count_result else 0
+                db_service.disconnect()
+            else:
+                emails_processed_today = 0
+            
+            return jsonify({
+                'success': True,
+                'monitoring': {
+                    'is_active': True,  # This should be dynamic from Gmail service
+                    'last_check': datetime.now().isoformat(),
+                    'emails_processed_today': emails_processed_today,
+                    'system_status': 'running'
+                }
+            })
+            
+        except Exception as e:
+            logging.error(f"Monitoring status error: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/reprocess/queue', methods=['GET'])
+    def get_reprocess_queue():
+        """
+        Get list of emails currently marked for reprocessing.
+        
+        Returns:
+            JSON response with reprocess queue
+        """
+        try:
+            # Initialize Gmail service to check reprocess queue
+            gmail_service = GmailService(
+                credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+                token_path=Config.GMAIL_TOKEN_FILE
+            )
+            
+            if not gmail_service.authenticate():
+                return jsonify({'error': 'Gmail authentication failed'}), 500
+            
+            reprocess_emails = gmail_service.get_reprocess_queue()
+            
+            return jsonify({
+                'success': True,
+                'count': len(reprocess_emails),
+                'queue': reprocess_emails
+            })
+            
+        except Exception as e:
+            logging.error(f"Reprocess queue error: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/reprocess/add/<gmail_id>', methods=['POST'])
+    def add_to_reprocess_queue(gmail_id: str):
+        """
+        Add an email to the reprocess queue by adding SnapQuote-Reprocess label.
+        
+        Args:
+            gmail_id (str): Gmail message ID
+            
+        Returns:
+            JSON response confirming the action
+        """
+        try:
+            # Initialize Gmail service
+            gmail_service = GmailService(
+                credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+                token_path=Config.GMAIL_TOKEN_FILE
+            )
+            
+            if not gmail_service.authenticate():
+                return jsonify({'error': 'Gmail authentication failed'}), 500
+            
+            success = gmail_service.mark_email_for_reprocessing(gmail_id)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'Email {gmail_id} marked for reprocessing'
+                })
+            else:
+                return jsonify({'error': 'Failed to mark email for reprocessing'}), 500
+            
+        except Exception as e:
+            logging.error(f"Add to reprocess error: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
     return app
 
 def start_gmail_monitoring():
@@ -339,10 +445,16 @@ def main():
         print("🌐 Starting Flask API server...")
         app = create_flask_app()
         print("📡 API Endpoints available:")
+        print("   GET / - Dashboard UI")
         print("   GET /api/emails - Get all stored emails")
         print("   GET /api/emails/stats - Get email statistics")
+        print("   GET /api/monitoring/status - Get monitoring status")
+        print("   GET /api/reprocess/queue - Get reprocess queue")
+        print("   POST /api/reprocess/add/<gmail_id> - Add email to reprocess")
+        print("   GET /api/quotation/generate/<gmail_id> - Generate Excel")
         print("   GET /api/health - Health check")
         print("🚀 Server running at http://localhost:5000")
+        print("🎯 Open http://localhost:5000 in your browser to view the dashboard")
         print("=" * 60)
         
         # Run Flask app

@@ -106,10 +106,33 @@ class GmailService:
             self.service = build('gmail', 'v1', credentials=creds)
             self.credentials = creds
             logger.info("Gmail API authentication successful")
+            
+            # Initialize required labels
+            self._initialize_labels()
+            
             return True
         except Exception as e:
             logger.error(f"Failed to build Gmail service: {str(e)}")
             return False
+    
+    def _initialize_labels(self):
+        """
+        Initialize all required Gmail labels for SnapQuote system.
+        Creates labels if they don't exist.
+        """
+        labels_to_create = [
+            ("SnapQuote-Fetched", "green"),
+            ("SnapQuote-Irrelevant", "grey"), 
+            ("SnapQuote-Reprocess", "blue")
+        ]
+        
+        for label_name, color in labels_to_create:
+            try:
+                label_id = self.create_label_if_not_exists(label_name, color)
+                if label_id:
+                    logger.info(f"Label '{label_name}' ready (ID: {label_id})")
+            except Exception as e:
+                logger.error(f"Failed to initialize label '{label_name}': {str(e)}")
     
     def start_monitoring(self, check_interval: int = 300) -> bool:
         """
@@ -177,9 +200,25 @@ class GmailService:
         
         while self.monitoring_active:
             try:
+                logger.info("Starting email check cycle...")
+                
+                # Check for new emails (not yet processed)
                 new_emails = self._check_for_new_emails()
+                logger.info(f"Email check completed, found {len(new_emails) if new_emails else 0} new emails")
+                
+                # Check for reprocess emails (manually marked for reprocessing)
+                reprocess_emails = self._check_for_reprocess_emails()
+                logger.info(f"Reprocess check completed, found {len(reprocess_emails) if reprocess_emails else 0} emails to reprocess")
+                
+                # Combine both lists for processing
+                all_emails = []
                 if new_emails:
-                    logger.info(f"Found {len(new_emails)} new emails")
+                    all_emails.extend(new_emails)
+                if reprocess_emails:
+                    all_emails.extend(reprocess_emails)
+                
+                if all_emails:
+                    logger.info(f"Processing {len(all_emails)} emails ({len(new_emails) if new_emails else 0} new, {len(reprocess_emails) if reprocess_emails else 0} reprocess)")
                     
                     # Initialize DuckDB service
                     db_service = DuckDBService()
@@ -190,8 +229,11 @@ class GmailService:
                     # Ensure table exists
                     db_service.create_table()
                     
-                    for email_data in new_emails:
+                    for email_data in all_emails:
                         gmail_id = email_data.get('gmail_id')
+                        
+                        # Check if this is a reprocess email or a new email
+                        is_reprocess = email_data.get('is_reprocess', False)
                         
                         # Check if email is already processed in database
                         existing_record = db_service.get_extraction(gmail_id)
@@ -199,7 +241,10 @@ class GmailService:
                         # Combine email body and attachment contents
                         combined_content = self._combine_email_content(email_data)
                         
-                        print(f"\n🔔 {'REPROCESSING' if existing_record else 'NEW'} EMAIL:")
+                        if is_reprocess:
+                            print(f"\n� REPROCESSING EMAIL (Manager Request):")
+                        else:
+                            print(f"\n🔔 {'UPDATING' if existing_record else 'NEW'} EMAIL:")
                         print(f"Subject: {email_data.get('subject', 'No Subject')}")
                         print(f"From: {email_data.get('sender', 'Unknown')}")
                         print(f"Received: {email_data.get('received_at', 'Unknown')}")
@@ -226,7 +271,13 @@ class GmailService:
                                 else:
                                     print(f"❌ Failed to save to database")
                             
-                            # Apply appropriate Gmail label
+                            # Handle labels for reprocess vs new emails
+                            if is_reprocess:
+                                # Remove reprocess label first
+                                self.remove_label_from_email(gmail_id, "SnapQuote-Reprocess")
+                                print(f"🏷️ Removed label: SnapQuote-Reprocess (Blue)")
+                            
+                            # Apply appropriate Gmail label based on extraction result
                             if extraction_result.get("status") == "NOT_VALID":
                                 # Irrelevant email - grey label
                                 self.add_label_to_email(gmail_id, "SnapQuote-Irrelevant", "grey")
@@ -247,9 +298,12 @@ class GmailService:
                     db_service.disconnect()
                 
                 self.last_check_time = datetime.now()
+                logger.info(f"Sleeping for {check_interval} seconds before next check...")
                 time.sleep(check_interval)
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {str(e)}")
+                print(f"❌ Email monitoring error: {str(e)}")
+                logger.info("Sleeping for 60 seconds due to error...")
                 time.sleep(60)  # Wait longer on error
     
     def _check_for_new_emails(self):
@@ -270,12 +324,14 @@ class GmailService:
                 # First run, get emails from last 1 hour
                 query += " newer_than:1h"
             
-            logger.debug(f"Searching emails with query: {query}")
+            logger.info(f"Gmail API query: {query}")
             
             # Search for emails
+            logger.info("Making Gmail API call...")
             results = self.service.users().messages().list(
                 userId='me', q=query, maxResults=10
             ).execute()
+            logger.info("Gmail API call completed")
             
             messages = results.get('messages', [])
             new_emails = []
@@ -297,8 +353,53 @@ class GmailService:
         except Exception as e:
             logger.error(f"Unexpected error checking emails: {str(e)}")
             return []
-        # Mock implementation - no actual checking yet
-        pass
+    
+    def _check_for_reprocess_emails(self):
+        """
+        Check Gmail for emails with SnapQuote-Reprocess label.
+        These emails should be reprocessed regardless of time constraints.
+        
+        Returns:
+            List[Dict]: List of email data marked for reprocessing
+        """
+        try:
+            # Create the reprocess label if it doesn't exist
+            self.create_label_if_not_exists("SnapQuote-Reprocess", "blue")
+            
+            # Build query for emails with reprocess label
+            query = "label:SnapQuote-Reprocess"
+            
+            logger.info(f"Gmail reprocess query: {query}")
+            
+            # Search for emails
+            logger.info("Making Gmail API call for reprocess emails...")
+            results = self.service.users().messages().list(
+                userId='me', q=query, maxResults=50
+            ).execute()
+            logger.info("Gmail reprocess API call completed")
+            
+            messages = results.get('messages', [])
+            reprocess_emails = []
+            
+            for message in messages:
+                try:
+                    email_data = self.get_email_details(message['id'])
+                    if email_data:
+                        # Mark this as a reprocess email
+                        email_data['is_reprocess'] = True
+                        reprocess_emails.append(email_data)
+                except Exception as e:
+                    logger.error(f"Error processing reprocess email {message['id']}: {str(e)}")
+                    continue
+            
+            return reprocess_emails
+            
+        except HttpError as e:
+            logger.error(f"Gmail API error checking reprocess emails: {str(e)}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error checking reprocess emails: {str(e)}")
+            return []
     
     def get_email_list(self, max_results: int = 100, query: str = "") -> List[Dict]:
         """
@@ -622,20 +723,25 @@ class GmailService:
                 if label['name'] == label_name:
                     return label['id']
             
-            # Create new label with color
+            # Gmail uses predefined color indices, not hex colors
+            # Let's create labels without custom colors first, then we can modify them
             color_map = {
-                'green': {'backgroundColor': '#16a766', 'textColor': '#ffffff'},
-                'grey': {'backgroundColor': '#999999', 'textColor': '#ffffff'},
-                'blue': {'backgroundColor': '#4285f4', 'textColor': '#ffffff'},
-                'red': {'backgroundColor': '#ea4335', 'textColor': '#ffffff'}
+                'green': None,  # Will use default and modify later
+                'grey': None,   # Will use default and modify later  
+                'blue': None,   # Will use default and modify later
+                'red': None,    # Will use default and modify later
             }
             
+            # Create label without color first
             label_object = {
                 'name': label_name,
                 'labelListVisibility': 'labelShow',
-                'messageListVisibility': 'show',
-                'color': color_map.get(color, color_map['grey'])
+                'messageListVisibility': 'show'
             }
+            
+            # Add color only if it's specified and we have a valid mapping
+            if color and color_map.get(color) is not None:
+                label_object['color'] = color_map[color]
             
             created_label = self.service.users().labels().create(
                 userId='me', body=label_object
@@ -683,3 +789,67 @@ class GmailService:
         except Exception as e:
             logger.error(f"Error adding label to email: {str(e)}")
             return False
+    
+    def remove_label_from_email(self, email_id: str, label_name: str) -> bool:
+        """
+        Remove label from an email.
+        
+        Args:
+            email_id (str): Gmail message ID
+            label_name (str): Name of the label to remove
+            
+        Returns:
+            bool: True if label removed successfully
+        """
+        if not self.service:
+            logger.error("Gmail service not authenticated")
+            return False
+        
+        try:
+            # Find the label ID by name
+            labels = self.service.users().labels().list(userId='me').execute()
+            label_id = None
+            for label in labels.get('labels', []):
+                if label['name'] == label_name:
+                    label_id = label['id']
+                    break
+            
+            if not label_id:
+                logger.warning(f"Label '{label_name}' not found")
+                return False
+            
+            # Remove label from email
+            self.service.users().messages().modify(
+                userId='me',
+                id=email_id,
+                body={'removeLabelIds': [label_id]}
+            ).execute()
+            
+            logger.info(f"Removed label '{label_name}' from email {email_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error removing label from email: {str(e)}")
+            return False
+    
+    def mark_email_for_reprocessing(self, email_id: str) -> bool:
+        """
+        Mark an email for reprocessing by adding the SnapQuote-Reprocess label.
+        This is typically used by managers to request reprocessing of specific emails.
+        
+        Args:
+            email_id (str): Gmail message ID
+            
+        Returns:
+            bool: True if successfully marked for reprocessing
+        """
+        return self.add_label_to_email(email_id, "SnapQuote-Reprocess", "blue")
+    
+    def get_reprocess_queue(self) -> List[Dict]:
+        """
+        Get list of emails currently marked for reprocessing.
+        
+        Returns:
+            List[Dict]: List of emails with SnapQuote-Reprocess label
+        """
+        return self._check_for_reprocess_emails()
