@@ -179,31 +179,21 @@ class ExcelGenerationService:
                     self._safe_set_cell(sheet, 'B4', client_phone)
             
             # Fill requirements/items starting from row 12 (not 15)
+            from openpyxl.styles import Font
             requirements = extraction_result.get('Requirements', [])
             if requirements:
-                # Start from row 12 for requirements 
+                from openpyxl.styles import Font
                 start_row = 12
-                current_row = start_row
-                
                 for idx, requirement in enumerate(requirements):
-                    # Serial Number for requirement
-                    self._safe_set_cell(sheet, f'A{current_row}', idx + 1)
-                    
-                    # Format: "Your requirement : [Requirement]"
-                    requirement_text = f"Your requirement : {str(requirement)}"
-                    self._safe_set_cell(sheet, f'B{current_row}', requirement_text)
-                    
-                    # Move to next row for "What we offer"
-                    current_row += 1
-                    
-                    # Serial Number for offer (same as requirement)
-                    self._safe_set_cell(sheet, f'A{current_row}', f"{idx + 1}.1")
-                    
-                    # "What we offer: [Empty for now]"
-                    self._safe_set_cell(sheet, f'B{current_row}', "What we offer: ")
-                    
-                    # Move to next requirement (skip a row for spacing)
-                    current_row += 2
+                    req_row = start_row + idx
+                    cell = sheet[f'B{req_row}']
+                    # Set cell value
+                    cell.value = f"Your Requirement: {requirement}\n\nWe OFFER:"
+                    # Set font to Calibri, size 11, black, underlined
+                    cell.font = Font(name='Calibri', size=11, color='000000', underline='single')
+                    # Partial coloring for 'We OFFER:' is not supported in openpyxl standard cells
+                    # If you want the whole cell red, uncomment below:
+                    # cell.font = Font(name='Calibri', size=11, color='FF0000', underline='single')
             
             # Add generation metadata at bottom
             if requirements:
@@ -284,3 +274,96 @@ class ExcelGenerationService:
         except Exception as e:
             logger.error(f"Error getting file info: {str(e)}")
             return None
+
+
+if __name__ == "__main__":
+    """
+    Test section for Excel generation service.
+    Run this file directly to test Excel generation with hardcoded data.
+    """
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Test data
+    test_data = {
+        "extraction_result": {
+            "Requirements": [
+                "Screwdriver sets suitable for industrial and precision mechanical applications",
+                "Standard Types: Flathead (Slotted), Phillips, Pozidriv (PZ), Torx (T), Hex (Allen), Robertson (Square)",
+                "Precision Series: Torx Security (TR), Tri-wing, Pentalobe, Spanner bits",
+                "Size Range: Flathead (2mm, 3mm, 4mm, 5mm, 6mm, 8mm), Phillips (PH000, PH00, PH0, PH1, PH2, PH3), Torx (T5 to T40), Hex (1.5mm to 10mm)",
+                "Handle Material: Dual-material (TPR + PP) or full soft-grip ergonomic handle",
+                "Blade Material: Chrome Vanadium Steel (Cr-V) or S2 Tool Steel, Nickel-Chrome plated",
+                "Tip Finish: Black oxide or magnetized tip",
+                "Shank Types: Round and hex bolster",
+                "Insulated Models: 1000V VDE certified screwdrivers",
+                "Set Configurations: 6-piece, 10-piece, 24-piece, and master toolkit sets",
+                "Packaging: Individual plastic case with foam inlay preferred",
+                "Estimated Quantity: 200–300 sets",
+                "Additional Requirements: OEM branding options, bulk discounts, delivery timelines, warranty details",
+                "Request for quotation, lead time, and sample availability"
+            ],
+            "email": "sanatjha4@gmail.com",
+            "mobile": "",
+            "to": "Sanat Kumar Jha"
+        },
+        "extraction_status": "VALID",
+        "gmail_id": "199b913ee7d694e4",
+        "id": 3,
+        "processed_at": "Mon, 06 Oct 2025 16:05:57 GMT",
+        "received_at": "Mon, 06 Oct 2025 16:04:44 GMT",
+        "sender": "Sanat Jha <sanatjha4@gmail.com>",
+        "subject": "Inquiry for Screwdrivers",
+        "updated_at": "Mon, 06 Oct 2025 16:24:48 GMT"
+    }
+    
+    print("🧪 Testing Excel Generation Service")
+    print("=" * 50)
+    
+    # Initialize the service
+    excel_service = ExcelGenerationService( template_path="QuotationFormat.xlsx")
+    
+    # Test 1: Analyze template
+    print("\n📋 Test 1: Analyzing template structure...")
+    analysis = excel_service.analyze_template()
+    if 'error' in analysis:
+        print(f"❌ Template analysis failed: {analysis['error']}")
+    else:
+        print(f"✅ Template analysis successful")
+        print(f"   - Found {len(analysis['sheets'])} sheet(s)")
+        for sheet in analysis['sheets']:
+            print(f"   - Sheet '{sheet['name']}': {len(sheet['cells_with_content'])} cells with content")
+    
+    # Test 2: Generate quotation Excel
+    print("\n📊 Test 2: Generating quotation Excel...")
+    output_file = excel_service.generate_quotation_excel(
+        gmail_id=test_data['gmail_id'],
+        extraction_data=test_data
+    )
+    
+    if output_file:
+        print(f"✅ Excel generation successful!")
+        print(f"   - File path: {output_file}")
+        
+        # Test 3: Get file info
+        print(f"\n📄 Test 3: Getting file information...")
+        file_info = excel_service.get_file_info(output_file)
+        if file_info:
+            print(f"✅ File info retrieved:")
+            print(f"   - Filename: {file_info['filename']}")
+            print(f"   - Size: {file_info['size_mb']} MB ({file_info['size_bytes']} bytes)")
+            print(f"   - Created: {file_info['created']}")
+        else:
+            print(f"❌ Failed to get file information")
+        
+        print(f"\n🎯 Test completed successfully!")
+        print(f"📁 You can find the generated file at: {os.path.abspath(output_file)}")
+        
+    else:
+        print(f"❌ Excel generation failed!")
+        
+    print("\n" + "=" * 50)
