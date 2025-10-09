@@ -257,33 +257,34 @@ class GmailService:
                             extraction_result = extract_hardware_quotation_details(combined_content)
                             print(json.dumps(extraction_result, indent=2))
                             
-                            # Save to database
-                            if existing_record:
-                                success = db_service.update_extraction(gmail_id, extraction_result)
-                                if success:
-                                    print(f"📝 Updated existing database record")
-                                else:
-                                    print(f"❌ Failed to update database record")
-                            else:
-                                record_id = db_service.insert_extraction(email_data, extraction_result)
-                                if record_id:
-                                    print(f"💾 Saved to database with ID: {record_id}")
-                                else:
-                                    print(f"❌ Failed to save to database")
-                            
                             # Handle labels for reprocess vs new emails
                             if is_reprocess:
                                 # Remove reprocess label first
                                 self.remove_label_from_email(gmail_id, "SnapQuote-Reprocess")
                                 print(f"🏷️ Removed label: SnapQuote-Reprocess (Blue)")
                             
-                            # Apply appropriate Gmail label based on extraction result
+                            # Check if email is valid before saving to database
                             if extraction_result.get("status") == "NOT_VALID":
-                                # Irrelevant email - grey label
+                                # Irrelevant email - only apply label, do NOT save to database
                                 self.add_label_to_email(gmail_id, "SnapQuote-Irrelevant", "grey")
                                 print(f"🏷️ Applied label: SnapQuote-Irrelevant (Grey)")
+                                print(f"⚠️ Email marked as irrelevant - NOT saved to database")
                             else:
-                                # Valid quotation - green label
+                                # Valid quotation - save to database and apply green label
+                                if existing_record:
+                                    success = db_service.update_extraction(gmail_id, extraction_result)
+                                    if success:
+                                        print(f"📝 Updated existing database record")
+                                    else:
+                                        print(f"❌ Failed to update database record")
+                                else:
+                                    record_id = db_service.insert_extraction(email_data, extraction_result)
+                                    if record_id:
+                                        print(f"💾 Saved to database with ID: {record_id}")
+                                    else:
+                                        print(f"❌ Failed to save to database")
+                                
+                                # Apply green label for valid quotations
                                 self.add_label_to_email(gmail_id, "SnapQuote-Fetched", "green")
                                 print(f"🏷️ Applied label: SnapQuote-Fetched (Green)")
                                 

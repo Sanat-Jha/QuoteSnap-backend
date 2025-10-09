@@ -4,7 +4,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables (if using .env file)
-load_dotenv()
+print(f"🔄 Loading environment variables from .env file...")
+env_loaded = load_dotenv()
+print(f"📋 Environment loaded: {env_loaded}")
 
 def extract_hardware_quotation_details(email_content: str):
     """
@@ -15,11 +17,15 @@ def extract_hardware_quotation_details(email_content: str):
     # Initialize OpenAI client
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        print("❌ OPENAI_API_KEY not found in environment variables")
         raise ValueError("OPENAI_API_KEY not found in environment variables")
     
+    print(f"🔑 OpenAI API key found (length: {len(api_key)})")
     try:
         client = OpenAI(api_key=api_key)
+        print(f"✅ OpenAI client initialized successfully")
     except Exception as e:
+        print(f"❌ Failed to initialize OpenAI client: {str(e)}")
         raise Exception(f"Failed to initialize OpenAI client: {str(e)}")
 
     # Create unified prompt for validation + extraction
@@ -64,14 +70,22 @@ EMAIL CONTENT:
 RESPONSE (either [IRRELEVANT] or JSON only):"""
 
     # Make single API call
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
+    print(f"🔄 Making OpenAI API call...")
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            timeout=30  # Add timeout to prevent hanging
+        )
+        print(f"✅ OpenAI API call completed successfully")
+    except Exception as e:
+        print(f"❌ OpenAI API call failed: {str(e)}")
+        raise e
 
     # Extract the response text
     response_text = response.choices[0].message.content.strip()
+    print(f"📄 Raw API response: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
 
     # Check if email is irrelevant
     if response_text == "[IRRELEVANT]":
