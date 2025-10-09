@@ -186,14 +186,24 @@ class ExcelGenerationService:
                 start_row = 12
                 for idx, requirement in enumerate(requirements):
                     req_row = start_row + idx
-                    cell = sheet[f'B{req_row}']
-                    # Set cell value
-                    cell.value = f"Your Requirement: {requirement}\n\nWe OFFER:"
-                    # Set font to Calibri, size 11, black, underlined
-                    cell.font = Font(name='Calibri', size=11, color='000000', underline='single')
-                    # Partial coloring for 'We OFFER:' is not supported in openpyxl standard cells
-                    # If you want the whole cell red, uncomment below:
-                    # cell.font = Font(name='Calibri', size=11, color='FF0000', underline='single')
+                    Desccell = sheet[f'B{req_row}']
+                    Desccell.value = f"Your Requirement: {requirement.get("Description")}\n\nWe OFFER:"
+                    Desccell.font = Font(name='Calibri', size=11, color='000000', underline='single')
+                    BrandCell = sheet[f'C{req_row}']
+                    BrandCell.value = requirement.get("Brand and model", "Generic")
+                    BrandCell.font = Font(name='Calibri', size=11, color='000000',bold=True)
+                    QtyCell = sheet[f'F{req_row}']
+                    QtyCell.value = requirement.get("Quantity")
+                    QtyCell.font = Font(name='Calibri', size=11, color='000000')
+                    UnitCell = sheet[f'G{req_row}']
+                    UnitCell.value = requirement.get("Unit", "")
+                    UnitCell.font = Font(name='Calibri', size=11, color='000000')
+                    UnitPriceCell = sheet[f'H{req_row}']
+                    UnitPriceCell.value = requirement.get("Unit price", "")
+                    UnitPriceCell.font = Font(name='Calibri', size=11, color='000000')
+                    TotalPriceCell = sheet[f'I{req_row}']
+                    TotalPriceCell.value = requirement.get("Total Price", "")
+                    TotalPriceCell.font = Font(name='Calibri', size=11, color='000000', bold=True)
             
             # Add generation metadata at bottom
             if requirements:

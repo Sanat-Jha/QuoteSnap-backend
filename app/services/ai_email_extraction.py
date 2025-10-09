@@ -59,8 +59,14 @@ IF VALID, return this exact JSON structure:
   "email": "Email address of requester (empty string if not found)", 
   "mobile": "Phone number of requester (empty string if not found)",
   "Requirements": [
-    "List each requirement, product, or specification as a separate string item",
-    "Include product name, quantity, and any specifications if available"
+    {{
+      "Brand and model": "Brand and model if available, otherwise empty string",
+      "Description": "Product description and specifications",
+      "Quantity": "Quantity if available, otherwise empty string",
+      "Unit": "Unit for quantity (pcs/Kg/Litre/etc) if available, otherwise empty string",
+      "Unit price": "Unit price if available, otherwise empty string",
+      "Total Price": "Total price if both unit price and quantity are given, otherwise empty string"
+    }}
   ]
 }}
 
@@ -75,8 +81,7 @@ RESPONSE (either [IRRELEVANT] or JSON only):"""
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            timeout=30  # Add timeout to prevent hanging
+            temperature=0
         )
         print(f"✅ OpenAI API call completed successfully")
     except Exception as e:
@@ -104,7 +109,7 @@ RESPONSE (either [IRRELEVANT] or JSON only):"""
 
 # Example usage - Single API call handles both validation and extraction
 if __name__ == "__main__":
-    # Example 1: Valid quotation request (should return JSON)
+    # Example 1: Valid quotation request (should return JSON with structured requirements)
     valid_email = """
     Dear Supplier,
     
@@ -112,11 +117,14 @@ if __name__ == "__main__":
     Please share quotation details for both flat-head and Philips-head screwdrivers,
     in sizes ranging from 2mm to 8mm. Quantity required: 200 sets.
     
+    Also need Stanley brand precision screwdriver set - 50 pieces at $25 per piece.
+    
     Kindly include details for insulated and non-insulated handle designs separately.
     
     Regards,
     Sanat Engineering Works
     Contact: sanat@engworks.com
+    Phone: +91-9876543210
     """
 
     # Example 2: Irrelevant email (should return [IRRELEVANT])
