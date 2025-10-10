@@ -8,6 +8,7 @@ using the QuotationFormat.xlsx template.
 import os
 import logging
 from typing import Dict, Optional, List
+from io import BytesIO
 import openpyxl
 from openpyxl import load_workbook
 import json
@@ -134,6 +135,43 @@ class ExcelGenerationService:
             
         except Exception as e:
             logger.error(f"Error generating quotation Excel: {str(e)}")
+            return None
+    
+    def generate_quotation_excel_in_memory(self, gmail_id: str, extraction_data: Dict) -> Optional[BytesIO]:
+        """
+        Generate a quotation Excel file in-memory from extraction data.
+        
+        Args:
+            gmail_id (str): Gmail message ID for logging
+            extraction_data (Dict): Email extraction data from database
+            
+        Returns:
+            Optional[BytesIO]: BytesIO object containing the Excel file, None if failed
+        """
+        try:
+            if not os.path.exists(self.template_path):
+                raise FileNotFoundError(f"Template file not found: {self.template_path}")
+            
+            # Load the template directly
+            workbook = load_workbook(self.template_path)
+            
+            # Get extraction result data
+            extraction_result = extraction_data.get('extraction_result', {})
+            
+            # Fill the template based on extraction data
+            self._fill_quotation_template(workbook, extraction_data, extraction_result)
+            
+            # Save to BytesIO object instead of file
+            excel_buffer = BytesIO()
+            workbook.save(excel_buffer)
+            excel_buffer.seek(0)  # Reset pointer to beginning
+            workbook.close()
+            
+            logger.info(f"Quotation Excel generated in-memory for gmail_id: {gmail_id}")
+            return excel_buffer
+            
+        except Exception as e:
+            logger.error(f"Error generating quotation Excel in-memory: {str(e)}")
             return None
     
     def _fill_quotation_template(self, workbook, email_data: Dict, extraction_result: Dict):

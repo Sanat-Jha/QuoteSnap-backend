@@ -191,16 +191,12 @@ def create_flask_app():
                     'status': extraction_data.get('extraction_status')
                 }), 400
             
-            # Generate Excel file
+            # Generate Excel file in-memory
             excel_service = ExcelGenerationService()
-            file_path = excel_service.generate_quotation_excel(gmail_id, extraction_data)
+            excel_buffer = excel_service.generate_quotation_excel_in_memory(gmail_id, extraction_data)
             
-            if not file_path:
+            if not excel_buffer:
                 return jsonify({'error': 'Failed to generate Excel file'}), 500
-            
-            # Validate file exists
-            if not os.path.exists(file_path):
-                return jsonify({'error': 'Generated file not found'}), 500
             
             # Create a descriptive filename for download
             subject = extraction_data.get('subject', 'quotation')[:30]  # Limit length
@@ -209,9 +205,9 @@ def create_flask_app():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             download_filename = f"Quotation_{clean_subject}_{timestamp}.xlsx"
             
-            # Return file for immediate download
+            # Return file for immediate download from memory
             return send_file(
-                file_path,
+                excel_buffer,
                 as_attachment=True,
                 download_name=download_filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
