@@ -115,6 +115,29 @@ class GmailService:
             logger.error(f"Failed to build Gmail service: {str(e)}")
             return False
     
+    def _build_service(self):
+        """
+        Build Gmail API service from credentials.
+        
+        Returns:
+            Gmail API service object
+        """
+        try:
+            if self.credentials:
+                service = build('gmail', 'v1', credentials=self.credentials)
+                logger.info("Gmail API service built successfully")
+                
+                # Initialize required labels
+                self._initialize_labels()
+                
+                return service
+            else:
+                logger.error("No credentials available to build service")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to build Gmail service: {str(e)}")
+            return None
+    
     def _initialize_labels(self):
         """
         Initialize all required Gmail labels for SnapQuote system.
