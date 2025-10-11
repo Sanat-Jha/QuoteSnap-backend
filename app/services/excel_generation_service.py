@@ -177,7 +177,7 @@ class ExcelGenerationService:
     def _fill_quotation_template(self, workbook, email_data: Dict, extraction_result: Dict):
         """
         Fill the Excel template with extracted data.
-        
+
         Args:
             workbook: Openpyxl workbook object
             email_data (Dict): Email metadata
@@ -186,72 +186,66 @@ class ExcelGenerationService:
         try:
             # Assume first sheet is the main quotation sheet
             sheet = workbook.active
-            
+
             # Client Information - Name in B2:C2 merged cells
             if 'to' in extraction_result:
                 client_name = extraction_result.get('to', '')
-                # Merge cells B2:C2 and set name
-                try:
-                    sheet.merge_cells('B2:C2')
-                    self._safe_set_cell(sheet, 'B2', client_name)
-                except:
-                    # If merge fails, just set B2
-                    self._safe_set_cell(sheet, 'B2', client_name)
-            
+                sheet.merge_cells('B2:C2')
+                self._safe_set_cell(sheet, 'B2', client_name)
+
             # Client Email - just below name (B3:C3)
             if 'email' in extraction_result:
                 client_email = extraction_result.get('email', '')
-                try:
-                    sheet.merge_cells('B3:C3')
-                    self._safe_set_cell(sheet, 'B3', client_email)
-                except:
-                    self._safe_set_cell(sheet, 'B3', client_email)
-            
+                sheet.merge_cells('B3:C3')
+                self._safe_set_cell(sheet, 'B3', client_email)
+
             # Client Phone - B4:C4
             if 'mobile' in extraction_result:
                 client_phone = extraction_result.get('mobile', '')
-                try:
-                    sheet.merge_cells('B4:C4')
-                    self._safe_set_cell(sheet, 'B4', client_phone)
-                except:
-                    self._safe_set_cell(sheet, 'B4', client_phone)
-            
-            # Fill requirements/items starting from row 12 (not 15)
+                sheet.merge_cells('B4:C4')
+                self._safe_set_cell(sheet, 'B4', client_phone)
+
+            # Fill requirements/items starting from row 12
             from openpyxl.styles import Font
             requirements = extraction_result.get('Requirements', [])
             if requirements:
-                from openpyxl.styles import Font
                 start_row = 12
+                # Duplicate row 12 for additional requirements
+                for _ in range(len(requirements) - 1):
+                    sheet.insert_rows(start_row + 1)
+                    for col in sheet.iter_cols(min_row=start_row, max_row=start_row, min_col=1):
+                        for cell in col:
+                            new_cell = sheet.cell(row=cell.row + 1, column=cell.column)
+                            new_cell.value = cell.value
+                            if cell.has_style:
+                                new_cell._style = cell._style
+
                 for idx, requirement in enumerate(requirements):
                     req_row = start_row + idx
                     Desccell = sheet[f'B{req_row}']
-                    Desccell.value = f"Your Requirement: {requirement.get("Description")}\n\nWe OFFER:"
-                    Desccell.font = Font(name='Calibri', size=11, color='000000', underline='single')
+                    Desccell.value = f"Your Requirement: {requirement.get('Description')}\n\nWe OFFER:"
+
                     BrandCell = sheet[f'C{req_row}']
                     BrandCell.value = requirement.get("Brand and model", "Generic")
-                    BrandCell.font = Font(name='Calibri', size=11, color='000000',bold=True)
+
                     QtyCell = sheet[f'F{req_row}']
                     QtyCell.value = requirement.get("Quantity")
-                    QtyCell.font = Font(name='Calibri', size=11, color='000000')
+
                     UnitCell = sheet[f'G{req_row}']
                     UnitCell.value = requirement.get("Unit", "")
-                    UnitCell.font = Font(name='Calibri', size=11, color='000000')
+
                     UnitPriceCell = sheet[f'H{req_row}']
                     UnitPriceCell.value = requirement.get("Unit price", "")
-                    UnitPriceCell.font = Font(name='Calibri', size=11, color='000000')
+
                     TotalPriceCell = sheet[f'I{req_row}']
                     TotalPriceCell.value = requirement.get("Total Price", "")
-                    TotalPriceCell.font = Font(name='Calibri', size=11, color='000000', bold=True)
-            
+
             # Add generation metadata at bottom
-            if requirements:
-                metadata_row = current_row + 2
-            else:
-                metadata_row = 20
+            metadata_row = start_row + len(requirements) + 2
             self._safe_set_cell(sheet, f'A{metadata_row}', f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            
+
             logger.info("Template filled with extraction data")
-            
+
         except Exception as e:
             logger.error(f"Error filling template: {str(e)}")
     
@@ -340,20 +334,46 @@ if __name__ == "__main__":
     test_data = {
         "extraction_result": {
             "Requirements": [
-                "Screwdriver sets suitable for industrial and precision mechanical applications",
-                "Standard Types: Flathead (Slotted), Phillips, Pozidriv (PZ), Torx (T), Hex (Allen), Robertson (Square)",
-                "Precision Series: Torx Security (TR), Tri-wing, Pentalobe, Spanner bits",
-                "Size Range: Flathead (2mm, 3mm, 4mm, 5mm, 6mm, 8mm), Phillips (PH000, PH00, PH0, PH1, PH2, PH3), Torx (T5 to T40), Hex (1.5mm to 10mm)",
-                "Handle Material: Dual-material (TPR + PP) or full soft-grip ergonomic handle",
-                "Blade Material: Chrome Vanadium Steel (Cr-V) or S2 Tool Steel, Nickel-Chrome plated",
-                "Tip Finish: Black oxide or magnetized tip",
-                "Shank Types: Round and hex bolster",
-                "Insulated Models: 1000V VDE certified screwdrivers",
-                "Set Configurations: 6-piece, 10-piece, 24-piece, and master toolkit sets",
-                "Packaging: Individual plastic case with foam inlay preferred",
-                "Estimated Quantity: 200–300 sets",
-                "Additional Requirements: OEM branding options, bulk discounts, delivery timelines, warranty details",
-                "Request for quotation, lead time, and sample availability"
+                {
+            "Brand and model": "",
+            "Description": "FLOOR STRIPPER 5 LITER",
+            "Quantity": "40",
+            "Total Price": "",
+            "Unit": "Each",
+            "Unit price": ""
+          },
+          {
+            "Brand and model": "",
+            "Description": "Hardware-Hard Brush w/Handle",
+            "Quantity": "100",
+            "Total Price": "",
+            "Unit": "Numbers",
+            "Unit price": ""
+          },
+          {
+            "Brand and model": "",
+            "Description": "Hardware-Soft Brush without Handle",
+            "Quantity": "100",
+            "Total Price": "",
+            "Unit": "Numbers",
+            "Unit price": ""
+          },
+          {
+            "Brand and model": "",
+            "Description": "TOILET BRUSH CLEANING WITH HOLDER",
+            "Quantity": "80",
+            "Total Price": "",
+            "Unit": "Each",
+            "Unit price": ""
+          },
+          {
+            "Brand and model": "",
+            "Description": "COCO BROOM WITH HANDLE",
+            "Quantity": "100",
+            "Total Price": "",
+            "Unit": "Each",
+            "Unit price": ""
+          }
             ],
             "email": "sanatjha4@gmail.com",
             "mobile": "",
