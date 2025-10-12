@@ -206,39 +206,81 @@ class ExcelGenerationService:
                 self._safe_set_cell(sheet, 'B4', client_phone)
 
             # Fill requirements/items starting from row 12
-            from openpyxl.styles import Font
+            from openpyxl.styles import Font, Alignment
+            from openpyxl.utils import get_column_letter
+
             requirements = extraction_result.get('Requirements', [])
             if requirements:
                 start_row = 12
                 # Duplicate row 12 for additional requirements
-                for _ in range(len(requirements) - 1):
-                    sheet.insert_rows(start_row + 1)
-                    for col in sheet.iter_cols(min_row=start_row, max_row=start_row, min_col=1):
+                for i in range(len(requirements) - 1):
+                    insert_at = start_row + 1 + i
+                    sheet.insert_rows(insert_at)
+                    # Copy values and styles from the template row (start_row)
+                    for col in sheet.iter_cols(min_row=start_row, max_row=start_row, min_col=1, max_col=9):
                         for cell in col:
-                            new_cell = sheet.cell(row=cell.row + 1, column=cell.column)
+                            new_cell = sheet.cell(row=cell.row + 1 + i, column=cell.column)
                             new_cell.value = cell.value
                             if cell.has_style:
                                 new_cell._style = cell._style
+                    # Unmerge all merged cells in columns A to I for the new row
+                    for col_idx in range(1, 10):  # Columns A (1) to I (9)
+                        cell_addr = f"{chr(64 + col_idx)}{insert_at}"
+                        for merged_range in list(sheet.merged_cells.ranges):
+                            if cell_addr in merged_range:
+                                sheet.unmerge_cells(str(merged_range))
 
                 for idx, requirement in enumerate(requirements):
                     req_row = start_row + idx
+
+                    # Serial number in column A
+                    SNCell = sheet[f'A{req_row}']
+                    SNCell.value = idx + 1
+
+                    # Description in column B
                     Desccell = sheet[f'B{req_row}']
                     Desccell.value = f"Your Requirement: {requirement.get('Description')}\n\nWe OFFER:"
+                    Desccell.font = Font(color="800080", bold=True, underline="single")
 
+                    # Brand and model in column C
                     BrandCell = sheet[f'C{req_row}']
                     BrandCell.value = requirement.get("Brand and model", "Generic")
 
+                    SaleCell = sheet[f'E{req_row}']
+                    SaleCell.value = "Ex stock, subject to prior sales."
+                    SaleCell.font = Font(bold=True, color="FF0000")
+
+                    # Quantity in column F
                     QtyCell = sheet[f'F{req_row}']
                     QtyCell.value = requirement.get("Quantity")
 
+                    # Unit in column G
                     UnitCell = sheet[f'G{req_row}']
                     UnitCell.value = requirement.get("Unit", "")
 
+                    # Unit price in column H
                     UnitPriceCell = sheet[f'H{req_row}']
                     UnitPriceCell.value = requirement.get("Unit price", "")
 
+                    # Total price in column I
                     TotalPriceCell = sheet[f'I{req_row}']
                     TotalPriceCell.value = requirement.get("Total Price", "")
+
+                    # Set row height (e.g., 40 for more space)
+                    sheet.row_dimensions[req_row].height = 60
+
+                    # Set wrap text and alignment for all columns A to I in this row
+                    for col_idx in range(1, 10):
+                        cell = sheet[f"{get_column_letter(col_idx)}{req_row}"]
+                        # Columns to center: A,C,E,F,G,H,I (1,3,5,6,7,8,9)
+                        if col_idx in [1, 3, 5, 6, 7, 8, 9]:
+                            cell.alignment = Alignment(
+                                wrap_text=True, vertical="center", horizontal="center"
+                            )
+                        else:
+                            cell.alignment = Alignment(
+                                wrap_text=True, vertical="top", horizontal="left"
+                            )
 
             # Add generation metadata at bottom
             metadata_row = start_row + len(requirements) + 2
