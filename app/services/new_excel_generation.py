@@ -195,10 +195,6 @@ class ExcelGenerationService:
                     chars3.Font.Color = 0x0000FF  # Red (RGB in BGR format: 0x00RRGGBB)
                     chars3.Font.Bold = True
                     chars3.Font.Underline = True
-                    # Brand and model - Column C
-                    brand_value = requirement.get("Brand and model", "")
-                    if brand_value:
-                        ws.Cells(req_row, 3).Value = str(brand_value)
                     # Quantity - Column F
                     qty_value = requirement.get("Quantity", "")
                     if qty_value:
@@ -211,10 +207,6 @@ class ExcelGenerationService:
                     unit_price_value = requirement.get("Unit price", "")
                     if unit_price_value:
                         ws.Cells(req_row, 8).Value = str(unit_price_value)
-                    # Total Price - Column I
-                    total_price_value = requirement.get("Total Price", "")
-                    if total_price_value:
-                        ws.Cells(req_row, 9).Value = str(total_price_value)
 
 
                 # Delete leftover rows if less than max_rows filled

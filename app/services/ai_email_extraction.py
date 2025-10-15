@@ -60,12 +60,10 @@ IF VALID, return this exact JSON structure:
   "mobile": "Phone number of requester (empty string if not found)",
   "Requirements": [
     {{
-      "Brand and model": "Brand and model if available, otherwise empty string",
       "Description": "Product description and specifications",
       "Quantity": "Quantity if available, otherwise empty string",
       "Unit": "Unit for quantity (pcs/Kg/Litre/etc) if available, otherwise empty string",
       "Unit price": "Unit price if available, otherwise empty string",
-      "Total Price": "Total price if both unit price and quantity are given, otherwise empty string"
     }}
   ]
 }}
