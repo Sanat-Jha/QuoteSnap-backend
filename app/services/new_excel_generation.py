@@ -216,13 +216,23 @@ class ExcelGenerationService:
                     if total_price_value:
                         ws.Cells(req_row, 9).Value = str(total_price_value)
 
+
                 # Delete leftover rows if less than max_rows filled
                 if num_filled < max_rows:
                     delete_start = start_row + num_filled
                     delete_end = start_row + max_rows - 1
-                    # Delete rows from delete_start to delete_end (inclusive)
-                    # Use ws.Rows("{start}:{end}").Delete()
                     ws.Rows(f"{delete_start}:{delete_end}").Delete()
+
+                # Add formulas for totals below the last filled requirement row
+                total_row = start_row + num_filled  # e.g., 12+50=62 for 50 items
+                vat_row = total_row + 1
+                grand_total_row = total_row + 2
+                # I{total_row}: Total Amount (sum of I12:I{last})
+                ws.Cells(total_row, 9).Formula = f"=SUM(I{start_row}:I{total_row-1})"
+                # I{vat_row}: VAT 5%
+                ws.Cells(vat_row, 9).Formula = f"=I{total_row}*0.05"
+                # I{grand_total_row}: Grand Total
+                ws.Cells(grand_total_row, 9).Formula = f"=I{total_row}+I{vat_row}"
 
 
 

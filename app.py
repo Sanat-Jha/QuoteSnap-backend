@@ -12,7 +12,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from app.services.gmail_service import GmailService
 from app.services.duckdb_service import DuckDBService
-from app.services.excel_generation_service import ExcelGenerationService
+from app.services.new_excel_generation import ExcelGenerationService
 from config.settings import Config
 
 # Load environment variables
@@ -302,11 +302,9 @@ def create_flask_app():
     @app.route('/api/quotation/generate/<gmail_id>', methods=['GET'])
     def generate_quotation(gmail_id: str):
         """
-        Generate and download Excel quotation file from stored email extraction data.
-        
+        Generate and download Excel quotation file from stored email extraction data using the new ExcelGenerationService (win32com version).
         Args:
             gmail_id (str): Gmail message ID
-            
         Returns:
             Excel file for immediate download
         """
@@ -315,42 +313,41 @@ def create_flask_app():
             db_service = DuckDBService()
             if not db_service.connect():
                 return jsonify({'error': 'Failed to connect to database'}), 500
-            
             extraction_data = db_service.get_extraction(gmail_id)
             db_service.disconnect()
-            
             if not extraction_data:
                 return jsonify({'error': f'Email with gmail_id {gmail_id} not found'}), 404
-            
             # Check if it's a valid quotation (not irrelevant)
             if extraction_data.get('extraction_status') != 'VALID':
                 return jsonify({
                     'error': 'Cannot generate quotation for irrelevant email',
                     'status': extraction_data.get('extraction_status')
                 }), 400
-            
-            # Generate Excel file in-memory
+            # Generate Excel file on disk using new service
             excel_service = ExcelGenerationService()
-            excel_buffer = excel_service.generate_quotation_excel_in_memory(gmail_id, extraction_data)
-            
-            if not excel_buffer:
+            output_file = excel_service.generate_quotation_excel(gmail_id, extraction_data)
+            if not output_file or not os.path.exists(output_file):
                 return jsonify({'error': 'Failed to generate Excel file'}), 500
-            
+
+            # Ensure the file is closed and saved before sending (important for win32com)
+            # (Already handled in service, but double-check)
+            import time
+            time.sleep(0.2)  # Small delay to ensure file system flush (esp. on Windows)
+
             # Create a descriptive filename for download
             subject = extraction_data.get('subject', 'quotation')[:30]  # Limit length
-            # Clean filename - remove invalid characters
             clean_subject = "".join(c for c in subject if c.isalnum() or c in (' ', '-', '_')).rstrip()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             download_filename = f"Quotation_{clean_subject}_{timestamp}.xlsx"
-            
-            # Return file for immediate download from memory
+
+            # Open the file in binary mode and send as attachment (ensures no in-memory re-save)
             return send_file(
-                excel_buffer,
+                os.path.abspath(output_file),
                 as_attachment=True,
                 download_name=download_filename,
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                max_age=0  # Prevent caching
             )
-            
         except Exception as e:
             logging.error(f"Quotation generation error: {str(e)}")
             return jsonify({'error': str(e)}), 500
@@ -387,26 +384,13 @@ def create_flask_app():
             logging.error(f"File download error: {str(e)}")
             return jsonify({'error': str(e)}), 500
     
+    # The new ExcelGenerationService does not provide a template analysis method, so this endpoint is now deprecated or should be updated if needed.
     @app.route('/api/template/analyze', methods=['GET'])
     def analyze_template():
         """
-        Analyze the Excel template structure.
-        
-        Returns:
-            JSON response with template analysis
+        (Deprecated) Analyze the Excel template structure. Not supported in new ExcelGenerationService.
         """
-        try:
-            excel_service = ExcelGenerationService()
-            analysis = excel_service.analyze_template()
-            
-            return jsonify({
-                'success': True,
-                'analysis': analysis
-            })
-            
-        except Exception as e:
-            logging.error(f"Template analysis error: {str(e)}")
-            return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Template analysis not supported in new ExcelGenerationService.'}), 501
     
     return app
 
