@@ -23,10 +23,18 @@ class ExcelGenerationService:
         """
         self.template_path = template_path
         self.output_dir = output_dir
-        
+
+        # Forcefully delete the output directory if it exists
+        if os.path.exists(output_dir):
+            try:
+                shutil.rmtree(output_dir)
+                logger.info(f"Deleted existing output directory: {output_dir}")
+            except Exception as e:
+                logger.error(f"Failed to delete output directory '{output_dir}': {str(e)}")
+
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
-        
+
         logger.info(f"Excel generation service initialized")
         logger.info(f"Template: {template_path}")
         logger.info(f"Output directory: {output_dir}")
