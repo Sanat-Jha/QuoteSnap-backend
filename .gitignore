@@ -185,10 +185,6 @@ database/
 uploads/
 temp/
 
-# Excel templates and generated files
-*.xlsx
-*.xls
-samples/
 
 # Environment specific
 .env.local
