@@ -169,6 +169,7 @@ cython_debug/
 token.json
 token.pickle
 credentials.json
+tokens/
 
 # Log files
 logs/
