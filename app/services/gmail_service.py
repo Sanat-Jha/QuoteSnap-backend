@@ -21,7 +21,7 @@ import json
 # Gmail API imports
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -54,6 +54,7 @@ class GmailService:
         self.monitoring_active = False
         self.monitoring_thread = None
         self.last_check_time = None
+        self.flow = None  # Store OAuth flow for web-based authentication
         
         logger.info("Gmail service initialized")
     
@@ -113,6 +114,153 @@ class GmailService:
             return True
         except Exception as e:
             logger.error(f"Failed to build Gmail service: {str(e)}")
+            return False
+    
+    def get_authorization_url(self, redirect_uri: str, state: Optional[str] = None) -> Optional[str]:
+        """
+        Generate Google OAuth authorization URL for web-based authentication.
+        
+        Args:
+            redirect_uri (str): The URI to redirect to after authorization
+            state (str): Optional state parameter for CSRF protection
+            
+        Returns:
+            Optional[str]: Authorization URL or None if failed
+        """
+        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                  'https://www.googleapis.com/auth/gmail.modify']
+        
+        try:
+            if not self.credentials_path or not os.path.exists(self.credentials_path):
+                logger.error("Gmail credentials file not found")
+                return None
+            
+            # Create OAuth flow for web application
+            self.flow = Flow.from_client_secrets_file(
+                self.credentials_path,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri
+            )
+            
+            # Generate authorization URL
+            authorization_url, state_token = self.flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true',
+                state=state,
+                prompt='consent'  # Force consent screen to ensure refresh token
+            )
+            
+            logger.info(f"Generated authorization URL for redirect_uri: {redirect_uri}")
+            return authorization_url
+            
+        except Exception as e:
+            logger.error(f"Failed to generate authorization URL: {str(e)}")
+            return None
+    
+    def authenticate_from_code(self, code: str, redirect_uri: str) -> bool:
+        """
+        Complete OAuth flow by exchanging authorization code for credentials.
+        
+        Args:
+            code (str): Authorization code from OAuth callback
+            redirect_uri (str): The redirect URI used in the initial request
+            
+        Returns:
+            bool: True if authentication successful
+        """
+        try:
+            if not self.flow:
+                # Recreate flow if not available
+                SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                          'https://www.googleapis.com/auth/gmail.modify']
+                self.flow = Flow.from_client_secrets_file(
+                    self.credentials_path,
+                    scopes=SCOPES,
+                    redirect_uri=redirect_uri
+                )
+            
+            # Exchange authorization code for credentials
+            self.flow.fetch_token(code=code)
+            creds = self.flow.credentials
+            
+            # Save the credentials
+            token_path = self.token_path or 'token.json'
+            try:
+                # Ensure token directory exists
+                token_dir = os.path.dirname(token_path)
+                if token_dir and not os.path.exists(token_dir):
+                    os.makedirs(token_dir, exist_ok=True)
+                    
+                with open(token_path, 'w') as token:
+                    token.write(creds.to_json())
+                logger.info(f"Saved credentials to {token_path}")
+            except Exception as e:
+                logger.error(f"Failed to save token: {str(e)}")
+                return False
+            
+            # Build Gmail service
+            self.service = build('gmail', 'v1', credentials=creds)
+            self.credentials = creds
+            logger.info("Gmail API authentication successful")
+            
+            # Initialize required labels
+            self._initialize_labels()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to authenticate from code: {str(e)}")
+            return False
+    
+    def authenticate_from_token(self, token_path: Optional[str] = None) -> bool:
+        """
+        Authenticate using existing token file.
+        
+        Args:
+            token_path (str): Path to token file (uses self.token_path if not provided)
+            
+        Returns:
+            bool: True if authentication successful
+        """
+        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                  'https://www.googleapis.com/auth/gmail.modify']
+        
+        token_file = token_path or self.token_path or 'token.json'
+        
+        if not os.path.exists(token_file):
+            logger.error(f"Token file not found: {token_file}")
+            return False
+        
+        try:
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+            
+            # Refresh if needed
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    # Save refreshed credentials
+                    with open(token_file, 'w') as token:
+                        token.write(creds.to_json())
+                except Exception as e:
+                    logger.error(f"Failed to refresh credentials: {str(e)}")
+                    return False
+            
+            if not creds or not creds.valid:
+                logger.error("Invalid credentials")
+                return False
+            
+            # Build Gmail service
+            self.service = build('gmail', 'v1', credentials=creds)
+            self.credentials = creds
+            logger.info("Gmail API authentication successful from token")
+            
+            # Initialize required labels
+            self._initialize_labels()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to authenticate from token: {str(e)}")
             return False
     
     def _build_service(self):

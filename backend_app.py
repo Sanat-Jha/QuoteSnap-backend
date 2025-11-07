@@ -6,6 +6,7 @@ Simple Gmail monitoring application that prints new emails.
 import logging
 import os
 import threading
+import uuid
 from datetime import datetime
 from flask import Flask, jsonify, send_file, redirect, session, request
 from flask_cors import CORS
@@ -18,9 +19,11 @@ from config.settings import Config
 # Load environment variables
 load_dotenv()
 
-# Global Gmail service instance
-gmail_service_instance = None
-monitoring_active = False
+# Global Gmail service instances (one per user session)
+gmail_services = {}  # session_id -> GmailService instance
+monitoring_active = {}  # session_id -> bool
+
+logger = logging.getLogger(__name__)
 
 def setup_logging():
     """Configure basic logging."""
@@ -33,7 +36,22 @@ def create_flask_app():
     """Create and configure Flask application."""
     app = Flask(__name__)
     app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
-    CORS(app, supports_credentials=True, origins=['http://localhost:5173', 'http://localhost:3000'])
+    
+    # Configure CORS with credentials support
+    cors_origins = Config.CORS_ORIGINS
+    CORS(app, supports_credentials=True, origins=cors_origins)
+    
+    def get_user_token_path(session_id: str) -> str:
+        """Get token file path for a specific user session."""
+        token_dir = Config.GMAIL_TOKEN_DIRECTORY
+        os.makedirs(token_dir, exist_ok=True)
+        return os.path.join(token_dir, f'token_{session_id}.json')
+    
+    def get_or_create_session():
+        """Get existing session ID or create a new one."""
+        if 'user_id' not in session:
+            session['user_id'] = str(uuid.uuid4())
+        return session['user_id']
     
     @app.route('/api/auth/status', methods=['GET'])
     def auth_status():
@@ -44,7 +62,14 @@ def create_flask_app():
             JSON response with authentication status
         """
         try:
-            token_path = Config.GMAIL_TOKEN_FILE
+            user_id = session.get('user_id')
+            if not user_id:
+                return jsonify({
+                    'authenticated': False,
+                    'message': 'No session found'
+                })
+            
+            token_path = get_user_token_path(user_id)
             
             if os.path.exists(token_path):
                 # Token file exists, check if valid
@@ -95,49 +120,117 @@ def create_flask_app():
     @app.route('/api/auth/login', methods=['GET'])
     def auth_login():
         """
-        Initiate Gmail OAuth flow.
+        Initiate Gmail OAuth flow by returning authorization URL.
         
         Returns:
-            Redirect to Google OAuth or success message
+            JSON with authorization URL for frontend to redirect to
         """
-        global gmail_service_instance, monitoring_active
-        
         try:
+            # Get or create user session
+            user_id = get_or_create_session()
+            
+            # Store state for CSRF protection
+            state = str(uuid.uuid4())
+            session['oauth_state'] = state
+            
+            # Create Gmail service
             gmail_service = GmailService(
                 credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                token_path=Config.GMAIL_TOKEN_FILE
+                token_path=get_user_token_path(user_id)
             )
             
-            if gmail_service.authenticate():
-                # Store the service instance globally
-                gmail_service_instance = gmail_service
+            # Generate authorization URL
+            auth_url = gmail_service.get_authorization_url(
+                redirect_uri=Config.OAUTH_REDIRECT_URI,
+                state=state
+            )
+            
+            if not auth_url:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to generate authorization URL'
+                }), 500
+            
+            # Store gmail service temporarily
+            gmail_services[user_id] = gmail_service
+            
+            return jsonify({
+                'success': True,
+                'authorization_url': auth_url,
+                'message': 'Redirect to authorization URL'
+            })
+            
+        except Exception as e:
+            logging.error(f"Auth login error: {str(e)}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+    
+    @app.route('/api/auth/callback', methods=['GET'])
+    def auth_callback():
+        """
+        Handle OAuth callback from Google.
+        Exchange authorization code for tokens and redirect to dashboard.
+        
+        Returns:
+            Redirect to frontend dashboard
+        """
+        try:
+            # Get authorization code and state from query parameters
+            code = request.args.get('code')
+            state = request.args.get('state')
+            error = request.args.get('error')
+            
+            if error:
+                logger.error(f"OAuth error: {error}")
+                return redirect(f"{Config.FRONTEND_URL}/?error=oauth_failed")
+            
+            if not code:
+                return jsonify({'success': False, 'error': 'No authorization code provided'}), 400
+            
+            # Verify state to prevent CSRF
+            stored_state = session.get('oauth_state')
+            if not stored_state or stored_state != state:
+                logger.error("State mismatch - possible CSRF attack")
+                return redirect(f"{Config.FRONTEND_URL}/?error=invalid_state")
+            
+            user_id = session.get('user_id')
+            if not user_id:
+                return redirect(f"{Config.FRONTEND_URL}/?error=no_session")
+            
+            # Get or create Gmail service
+            gmail_service = gmail_services.get(user_id)
+            if not gmail_service:
+                gmail_service = GmailService(
+                    credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+                    token_path=get_user_token_path(user_id)
+                )
+            
+            # Exchange code for credentials
+            if gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI):
+                # Store the service instance
+                gmail_services[user_id] = gmail_service
                 
                 # Start monitoring if not already active
-                if not monitoring_active:
-                    import threading
+                if user_id not in monitoring_active or not monitoring_active[user_id]:
                     monitoring_thread = threading.Thread(
                         target=start_monitoring_loop,
                         args=(gmail_service,),
                         daemon=True
                     )
                     monitoring_thread.start()
-                    monitoring_active = True
-                    logger.info("📧 Email monitoring started")
+                    monitoring_active[user_id] = True
+                    logger.info(f"📧 Email monitoring started for user {user_id}")
                 
-                return jsonify({
-                    'success': True,
-                    'message': 'Authentication successful',
-                    'redirect': 'http://localhost:5173/dashboard'
-                })
+                # Clear OAuth state
+                session.pop('oauth_state', None)
+                
+                # Redirect to dashboard
+                return redirect(f"{Config.FRONTEND_URL}/dashboard")
             else:
-                return jsonify({
-                    'success': False,
-                    'message': 'Authentication failed'
-                }), 401
+                return redirect(f"{Config.FRONTEND_URL}/?error=auth_failed")
                 
         except Exception as e:
-            logging.error(f"Auth login error: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
+            logging.error(f"Auth callback error: {str(e)}")
+            return redirect(f"{Config.FRONTEND_URL}/?error=server_error")
     
     @app.route('/api/auth/logout', methods=['POST'])
     def auth_logout():
@@ -147,18 +240,24 @@ def create_flask_app():
         Returns:
             JSON response confirming logout
         """
-        global gmail_service_instance, monitoring_active
-        
         try:
-            token_path = Config.GMAIL_TOKEN_FILE
-            if os.path.exists(token_path):
-                os.remove(token_path)
-            
-            # Stop monitoring
-            if gmail_service_instance:
-                gmail_service_instance.stop_monitoring()
-                gmail_service_instance = None
-            monitoring_active = False
+            user_id = session.get('user_id')
+            if user_id:
+                token_path = get_user_token_path(user_id)
+                if os.path.exists(token_path):
+                    os.remove(token_path)
+                
+                # Stop monitoring
+                if user_id in gmail_services:
+                    gmail_service = gmail_services[user_id]
+                    gmail_service.stop_monitoring()
+                    del gmail_services[user_id]
+                
+                if user_id in monitoring_active:
+                    del monitoring_active[user_id]
+                
+                # Clear session
+                session.clear()
             
             return jsonify({
                 'success': True,
@@ -428,100 +527,86 @@ def initialize_database():
         print(f"❌ Database initialization error: {str(e)}")
         logging.error(f"Database initialization error: {str(e)}")
 
-def check_and_start_monitoring_if_authenticated():
-    """Check if user is already authenticated and start monitoring."""
-    global gmail_service_instance, monitoring_active
-    
+def check_and_start_monitoring_for_existing_users():
+    """Check for existing user tokens and start monitoring for each."""
     try:
-        token_path = Config.GMAIL_TOKEN_FILE
+        token_dir = Config.GMAIL_TOKEN_DIRECTORY
         
-        if os.path.exists(token_path):
-            print("🔍 Found existing authentication token...")
-            
-            # Try to authenticate with existing token
-            from google.oauth2.credentials import Credentials
-            from google.auth.transport.requests import Request
-            
-            SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                      'https://www.googleapis.com/auth/gmail.modify']
-            
+        if not os.path.exists(token_dir):
+            print("� No token directory found. Users need to login via frontend.")
+            return
+        
+        # Find all token files
+        token_files = [f for f in os.listdir(token_dir) if f.startswith('token_') and f.endswith('.json')]
+        
+        if not token_files:
+            print("💡 No authentication tokens found. Users need to login via frontend.")
+            return
+        
+        print(f"🔍 Found {len(token_files)} existing user token(s)...")
+        
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        
+        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                  'https://www.googleapis.com/auth/gmail.modify']
+        
+        for token_file in token_files:
             try:
+                # Extract user_id from filename (token_USER_ID.json)
+                user_id = token_file.replace('token_', '').replace('.json', '')
+                token_path = os.path.join(token_dir, token_file)
+                
                 creds = Credentials.from_authorized_user_file(token_path, SCOPES)
                 
+                # Refresh if expired
+                if creds and creds.expired and creds.refresh_token:
+                    print(f"🔄 Refreshing token for user {user_id[:8]}...")
+                    try:
+                        creds.refresh(Request())
+                        with open(token_path, 'w') as token:
+                            token.write(creds.to_json())
+                        print(f"✅ Token refreshed for user {user_id[:8]}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to refresh token for user {user_id[:8]}: {str(e)}")
+                        continue
+                
                 if creds and creds.valid:
-                    # Valid token, start monitoring
-                    print("✅ Token is valid, starting email monitoring...")
-                    
+                    # Create Gmail service for this user
                     gmail_service = GmailService(
                         credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                        token_path=Config.GMAIL_TOKEN_FILE
+                        token_path=token_path
                     )
                     gmail_service.credentials = creds
                     gmail_service.service = gmail_service._build_service()
                     
-                    gmail_service_instance = gmail_service
+                    # Store service instance
+                    gmail_services[user_id] = gmail_service
                     
                     # Start monitoring in background
-                    import threading
                     monitoring_thread = threading.Thread(
                         target=start_monitoring_loop,
                         args=(gmail_service,),
                         daemon=True
                     )
                     monitoring_thread.start()
-                    monitoring_active = True
+                    monitoring_active[user_id] = True
                     
-                    print("📧 Email monitoring active")
-                    return True
+                    print(f"✅ Email monitoring active for user {user_id[:8]}")
+                else:
+                    print(f"⚠️ Invalid token for user {user_id[:8]}")
                     
-                elif creds and creds.expired and creds.refresh_token:
-                    # Try to refresh
-                    print("🔄 Token expired, attempting to refresh...")
-                    try:
-                        creds.refresh(Request())
-                        with open(token_path, 'w') as token:
-                            token.write(creds.to_json())
-                        print("✅ Token refreshed successfully")
-                        
-                        # Now start monitoring with refreshed token
-                        gmail_service = GmailService(
-                            credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                            token_path=Config.GMAIL_TOKEN_FILE
-                        )
-                        gmail_service.credentials = creds
-                        gmail_service.service = gmail_service._build_service()
-                        
-                        gmail_service_instance = gmail_service
-                        
-                        import threading
-                        monitoring_thread = threading.Thread(
-                            target=start_monitoring_loop,
-                            args=(gmail_service,),
-                            daemon=True
-                        )
-                        monitoring_thread.start()
-                        monitoring_active = True
-                        
-                        print("📧 Email monitoring active")
-                        return True
-                        
-                    except Exception as e:
-                        print(f"⚠️ Failed to refresh token: {str(e)}")
-                        print("💡 Please login via frontend to re-authenticate")
-                        return False
-                        
             except Exception as e:
-                print(f"⚠️ Invalid token: {str(e)}")
-                print("💡 Please login via frontend to re-authenticate")
-                return False
-        else:
-            print("💡 No authentication token found. Please login via frontend.")
-            return False
-            
+                print(f"⚠️ Error processing token {token_file}: {str(e)}")
+                continue
+        
+        active_count = len([v for v in monitoring_active.values() if v])
+        if active_count > 0:
+            print(f"� Email monitoring active for {active_count} user(s)")
+        
     except Exception as e:
         logging.error(f"Error checking authentication: {str(e)}")
-        return False
-        logging.error(f"Gmail monitoring error: {str(e)}")
+        print(f"⚠️ Error checking for existing tokens: {str(e)}")
 
 def main():
     """Main application entry point."""
@@ -542,15 +627,16 @@ def main():
         # Initialize database
         initialize_database()
         
-        # Check if already authenticated and start monitoring
-        check_and_start_monitoring_if_authenticated()
+        # Check if already authenticated and start monitoring for existing users
+        check_and_start_monitoring_for_existing_users()
         
         # Create and run Flask API
         print("🌐 Starting Flask API server...")
         app = create_flask_app()
         print("📡 API Endpoints available:")
         print("   GET /api/auth/status - Check authentication status")
-        print("   GET /api/auth/login - Login with Google")
+        print("   GET /api/auth/login - Get OAuth authorization URL")
+        print("   GET /api/auth/callback - OAuth callback handler")
         print("   POST /api/auth/logout - Logout")
         print("   GET /api/emails - Get all stored emails")
         print("   GET /api/emails/stats - Get email statistics")
@@ -558,7 +644,8 @@ def main():
         print("   GET /api/health - Health check")
         print("🚀 Server running at http://localhost:5000")
         print("=" * 60)
-        if not monitoring_active:
+        active_users = len([v for v in monitoring_active.values() if v])
+        if active_users == 0:
             print("💡 Tip: Email monitoring will start automatically when you login via frontend")
             print("=" * 60)
         

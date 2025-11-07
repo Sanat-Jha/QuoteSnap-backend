@@ -52,12 +52,19 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
     DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
+    # CORS Configuration
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:5173,http://localhost:3000').split(',')
+    FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+    
+    # OAuth Redirect Configuration
+    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:5000/api/auth/callback')
+    
     # Database Configuration
     DATABASE_URL = os.environ.get('DATABASE_URL') or 'sqlite:///database/quotesnap.db'
     
     # Gmail API Configuration
     GMAIL_CREDENTIALS_FILE = os.environ.get('GMAIL_CREDENTIALS_FILE') or 'credentials.json'
-    GMAIL_TOKEN_FILE = os.environ.get('GMAIL_TOKEN_FILE') or 'token.json'
+    GMAIL_TOKEN_DIRECTORY = os.environ.get('GMAIL_TOKEN_DIRECTORY') or 'tokens'
     GMAIL_SCOPES = [
         'https://www.googleapis.com/auth/gmail.readonly',
         'https://www.googleapis.com/auth/gmail.modify'
