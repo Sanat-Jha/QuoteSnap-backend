@@ -6,6 +6,7 @@ email monitoring, fetching, and authentication management.
 """
 
 import logging
+from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import threading
@@ -413,13 +414,25 @@ class GmailService:
                         combined_content = self._combine_email_content(email_data)
                         
                         if is_reprocess:
-                            print(f"\n� REPROCESSING EMAIL (Manager Request):")
+                            print(f"\n🔄 REPROCESSING EMAIL (Manager Request):")
                         else:
                             print(f"\n🔔 {'UPDATING' if existing_record else 'NEW'} EMAIL:")
                         print(f"Subject: {email_data.get('subject', 'No Subject')}")
                         print(f"From: {email_data.get('sender', 'Unknown')}")
                         print(f"Received: {email_data.get('received_at', 'Unknown')}")
                         print(f"Attachments: {len(email_data.get('attachments', []))} files")
+                        
+                        # Debug: Show content type and length
+                        has_html = bool(email_data.get('body_html', '').strip())
+                        has_text = bool(email_data.get('body_text', '').strip())
+                        print(f"Content types: HTML={has_html}, Text={has_text}")
+                        print(f"Combined content length: {len(combined_content)} characters")
+                        
+                        # Show first 500 characters of combined content for debugging
+                        print(f"\n📄 COMBINED CONTENT PREVIEW:")
+                        print("-" * 50)
+                        print(combined_content[:500] + ("..." if len(combined_content) > 500 else ""))
+                        print("-" * 50)
                         
                         # Process with AI extraction
                         print(f"\n🤖 AI EXTRACTION RESULT:")
@@ -632,10 +645,16 @@ class GmailService:
                     data = part['body'].get('data', '')
                     if data:
                         body_text = base64.urlsafe_b64decode(data).decode('utf-8')
+                        logger.info(f"Extracted plain text body: {len(body_text)} characters")
                 elif part.get('mimeType') == 'text/html':
                     data = part['body'].get('data', '')
                     if data:
                         body_html = base64.urlsafe_b64decode(data).decode('utf-8')
+                        logger.info(f"Extracted HTML body: {len(body_html)} characters")
+                        # Check if HTML contains tables
+                        table_count = body_html.lower().count('<table')
+                        if table_count > 0:
+                            logger.info(f"HTML contains {table_count} table(s)")
                 elif 'parts' in part:
                     for subpart in part['parts']:
                         extract_parts(subpart)
@@ -666,6 +685,7 @@ class GmailService:
                     content = self._get_attachment_content(email_id, attachment['attachmentId'])
                     if content:
                         processed_content = process_attachment(attachment['filename'], content)
+                        print
                         attachment_contents.append(f"\n\n---\n# Attachment: {attachment['filename']}\n\n{processed_content}")
             
             # Convert timestamp
@@ -732,15 +752,53 @@ class GmailService:
         body_text = email_data.get('body_text', '').strip()
         body_html = email_data.get('body_html', '').strip()
         
-        if body_text:
-            combined.append("## Email Body\n\n")
-            combined.append(f"{body_text}\n\n")
-        elif body_html:
+        # Prioritize HTML content when available as it may contain tables
+        if body_html:
             combined.append("## Email Body (HTML)\n\n")
-            # Basic HTML to text conversion (remove tags)
-            import re
-            clean_html = re.sub('<.*?>', '', body_html)
-            combined.append(f"{clean_html}\n\n")
+            # Parse HTML and extract tables as markdown
+            soup = BeautifulSoup(body_html, "html.parser")
+            # Extract tables
+            tables = soup.find_all("table")
+            
+            # Debug logging
+            logger.info(f"Found {len(tables)} tables in HTML content")
+            
+            for i, table in enumerate(tables):
+                logger.info(f"Processing table {i+1}")
+                # Convert table to markdown
+                rows = table.find_all("tr")
+                table_data = []
+                for row in rows:
+                    cols = row.find_all(["td", "th"])
+                    table_data.append([col.get_text(strip=True) for col in cols])
+                
+                if table_data:
+                    combined.append(f"\n### Table {i+1}\n\n")
+                    # Markdown table header
+                    header = table_data[0] if table_data else []
+                    if header:
+                        md_table = "| " + " | ".join(header) + " |\n"
+                        md_table += "| " + " | ".join(["---"] * len(header)) + " |\n"
+                        for row in table_data[1:]:
+                            # Pad row with empty cells if needed
+                            while len(row) < len(header):
+                                row.append("")
+                            md_table += "| " + " | ".join(row[:len(header)]) + " |\n"
+                        combined.append(md_table + "\n")
+                        logger.info(f"Converted table {i+1} to markdown with {len(table_data)} rows")
+                
+                # Remove the table from soup so it doesn't get duplicated in text
+                table.decompose()
+            
+            # Add the rest of the HTML as plain text
+            clean_html = soup.get_text(separator="\n", strip=True)
+            if clean_html:
+                combined.append("### Additional Content\n\n")
+                combined.append(f"{clean_html}\n\n")
+            
+        elif body_text:
+            combined.append("## Email Body (Text)\n\n")
+            combined.append(f"{body_text}\n\n")
         else:
             combined.append("## Email Body\n\n*[No text content]*\n\n")
         

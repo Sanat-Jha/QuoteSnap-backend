@@ -35,23 +35,34 @@ def setup_logging():
 def create_flask_app():
     """Create and configure Flask application."""
     app = Flask(__name__)
-    app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
-    
-    # Configure CORS with credentials support
-    cors_origins = Config.CORS_ORIGINS
-    CORS(app, supports_credentials=True, origins=cors_origins)
-    
-    def get_user_token_path(session_id: str) -> str:
-        """Get token file path for a specific user session."""
+
+    # 🔐 Use a strong secret key
+    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change")
+
+    # ✅ CORS CONFIGURATION (important for session cookies)
+    CORS(app,
+         supports_credentials=True,
+         origins=Config.CORS_ORIGINS,
+         allow_headers=["Content-Type", "Authorization"],
+         methods=["GET", "POST", "OPTIONS"])
+
+    # 🔑 Ensure session cookies are properly configured
+    app.config.update(
+        SESSION_COOKIE_SAMESITE='None',  # Required for cross-site
+        SESSION_COOKIE_SECURE=True,      # Required when frontend runs on HTTPS
+        SESSION_PERMANENT=False
+    )
+
+    def get_user_token_path(session_id):
         token_dir = Config.GMAIL_TOKEN_DIRECTORY
         os.makedirs(token_dir, exist_ok=True)
-        return os.path.join(token_dir, f'token_{session_id}.json')
-    
+        return os.path.join(token_dir, f"token_{session_id}.json")
+
     def get_or_create_session():
-        """Get existing session ID or create a new one."""
-        if 'user_id' not in session:
-            session['user_id'] = str(uuid.uuid4())
-        return session['user_id']
+        if "user_id" not in session:
+            session["user_id"] = str(uuid.uuid4())
+        return session["user_id"]
+
     
     @app.route('/api/auth/status', methods=['GET'])
     def auth_status():
@@ -117,119 +128,84 @@ def create_flask_app():
             logging.error(f"Auth status error: {str(e)}")
             return jsonify({'authenticated': False, 'error': str(e)}), 500
     
-    @app.route('/api/auth/login', methods=['GET'])
+    @app.route("/api/auth/login", methods=["GET"])
     def auth_login():
-        """
-        Initiate Gmail OAuth flow by returning authorization URL.
-        
-        Returns:
-            JSON with authorization URL for frontend to redirect to
-        """
         try:
-            # Get or create user session
             user_id = get_or_create_session()
-            
-            # Store state for CSRF protection
             state = str(uuid.uuid4())
-            session['oauth_state'] = state
-            
-            # Create Gmail service
+            session["oauth_state"] = state  # store CSRF token
+
             gmail_service = GmailService(
                 credentials_path=Config.GMAIL_CREDENTIALS_FILE,
                 token_path=get_user_token_path(user_id)
             )
-            
-            # Generate authorization URL
+
             auth_url = gmail_service.get_authorization_url(
                 redirect_uri=Config.OAUTH_REDIRECT_URI,
                 state=state
             )
-            
+
             if not auth_url:
-                return jsonify({
-                    'success': False,
-                    'message': 'Failed to generate authorization URL'
-                }), 500
-            
-            # Store gmail service temporarily
+                return jsonify({"success": False, "message": "Failed to generate auth URL"}), 500
+
             gmail_services[user_id] = gmail_service
-            
+
             return jsonify({
-                'success': True,
-                'authorization_url': auth_url,
-                'message': 'Redirect to authorization URL'
+                "success": True,
+                "authorization_url": auth_url
             })
-            
+
         except Exception as e:
-            logging.error(f"Auth login error: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
-    @app.route('/api/auth/callback', methods=['GET'])
+            logger.error(f"Auth login error: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+
+    @app.route("/api/auth/callback", methods=["GET"])
     def auth_callback():
-        """
-        Handle OAuth callback from Google.
-        Exchange authorization code for tokens and redirect to dashboard.
-        
-        Returns:
-            Redirect to frontend dashboard
-        """
         try:
-            # Get authorization code and state from query parameters
-            code = request.args.get('code')
-            state = request.args.get('state')
-            error = request.args.get('error')
-            
+            code = request.args.get("code")
+            state = request.args.get("state")
+            error = request.args.get("error")
+
             if error:
-                logger.error(f"OAuth error: {error}")
                 return redirect(f"{Config.FRONTEND_URL}/?error=oauth_failed")
-            
+
             if not code:
-                return jsonify({'success': False, 'error': 'No authorization code provided'}), 400
-            
-            # Verify state to prevent CSRF
-            stored_state = session.get('oauth_state')
+                return jsonify({"success": False, "error": "Missing code"}), 400
+
+            stored_state = session.get("oauth_state")
             if not stored_state or stored_state != state:
-                logger.error("State mismatch - possible CSRF attack")
+                logger.error(f"❌ Invalid OAuth state: stored={stored_state}, got={state}")
                 return redirect(f"{Config.FRONTEND_URL}/?error=invalid_state")
-            
-            user_id = session.get('user_id')
+
+            user_id = session.get("user_id")
             if not user_id:
+                logger.error("❌ No user session found during callback")
                 return redirect(f"{Config.FRONTEND_URL}/?error=no_session")
-            
-            # Get or create Gmail service
-            gmail_service = gmail_services.get(user_id)
-            if not gmail_service:
-                gmail_service = GmailService(
-                    credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                    token_path=get_user_token_path(user_id)
-                )
-            
-            # Exchange code for credentials
+
+            gmail_service = gmail_services.get(user_id) or GmailService(
+                credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+                token_path=get_user_token_path(user_id)
+            )
+
             if gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI):
-                # Store the service instance
                 gmail_services[user_id] = gmail_service
-                
-                # Start monitoring if not already active
-                if user_id not in monitoring_active or not monitoring_active[user_id]:
-                    monitoring_thread = threading.Thread(
-                        target=start_monitoring_loop,
-                        args=(gmail_service,),
-                        daemon=True
+
+                if not monitoring_active.get(user_id):
+                    thread = threading.Thread(
+                        target=start_monitoring_loop, args=(gmail_service,), daemon=True
                     )
-                    monitoring_thread.start()
+                    thread.start()
                     monitoring_active[user_id] = True
-                    logger.info(f"📧 Email monitoring started for user {user_id}")
-                
-                # Clear OAuth state
-                session.pop('oauth_state', None)
-                
-                # Redirect to dashboard
+
+                session.pop("oauth_state", None)
                 return redirect(f"{Config.FRONTEND_URL}/dashboard")
+
             else:
                 return redirect(f"{Config.FRONTEND_URL}/?error=auth_failed")
-                
+
         except Exception as e:
-            logging.error(f"Auth callback error: {str(e)}")
+            logger.error(f"Auth callback error: {e}")
             return redirect(f"{Config.FRONTEND_URL}/?error=server_error")
     
     @app.route('/api/auth/logout', methods=['POST'])
@@ -388,6 +364,117 @@ def create_flask_app():
         except Exception as e:
             logging.error(f"API error: {str(e)}")
             return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/requirement/delete', methods=['POST'])
+    def delete_requirement():
+        """
+        Delete a specific requirement from an extraction's requirements list.
+
+        Expects JSON body: { "gmail_id": "<id>", "index": <int> }
+        """
+        try:
+            data = request.get_json(force=True)
+            gmail_id = data.get('gmail_id')
+            index = data.get('index')
+
+            if not gmail_id:
+                return jsonify({'success': False, 'error': 'Missing gmail_id'}), 400
+            if index is None:
+                return jsonify({'success': False, 'error': 'Missing index'}), 400
+
+            try:
+                index = int(index)
+            except Exception:
+                return jsonify({'success': False, 'error': 'Index must be an integer'}), 400
+
+            db_service = DuckDBService()
+            if not db_service.connect():
+                return jsonify({'success': False, 'error': 'Failed to connect to database'}), 500
+
+            extraction = db_service.get_extraction(gmail_id)
+            if not extraction:
+                db_service.disconnect()
+                return jsonify({'success': False, 'error': 'Extraction not found for given gmail_id'}), 404
+
+            extraction_result = extraction.get('extraction_result') or {}
+
+            # Support either 'Requirements' or 'requirements' (case-insensitive)
+            req_key = None
+            for k in extraction_result.keys():
+                if k.lower() == 'requirements':
+                    req_key = k
+                    break
+
+            if req_key is None:
+                db_service.disconnect()
+                return jsonify({'success': False, 'error': 'No requirements list found for this extraction'}), 400
+
+            requirements = extraction_result.get(req_key)
+            if not isinstance(requirements, list):
+                db_service.disconnect()
+                return jsonify({'success': False, 'error': 'Requirements field is not a list'}), 400
+
+            if index < 0 or index >= len(requirements):
+                db_service.disconnect()
+                return jsonify({'success': False, 'error': 'Index out of range'}), 400
+
+            # Remove the item and preserve the original key name
+            removed = requirements.pop(index)
+            extraction_result[req_key] = requirements
+
+            updated = db_service.update_extraction(gmail_id, extraction_result)
+            db_service.disconnect()
+
+            if not updated:
+                return jsonify({'success': False, 'error': 'Failed to update extraction in database'}), 500
+
+            return jsonify({'success': True, 'removed': removed, 'requirements': requirements})
+
+        except Exception as e:
+            logging.error(f"Requirement delete error: {str(e)}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @app.route('/api/database/clear', methods=['POST'])
+    def clear_database():
+        """
+        Delete all quotations from the database (clear all email_extractions records).
+        
+        Returns:
+            JSON response with number of records deleted
+        """
+        try:
+            db_service = DuckDBService()
+            if not db_service.connect():
+                return jsonify({'success': False, 'error': 'Failed to connect to database'}), 500
+            
+            # Get count before deletion
+            count_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
+            records_before = count_result[0] if count_result else 0
+            
+            # Delete all records
+            db_service.connection.execute('DELETE FROM email_extractions')
+            
+            # Verify deletion
+            count_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
+            records_after = count_result[0] if count_result else 0
+            
+            db_service.disconnect()
+            
+            deleted_count = records_before - records_after
+            
+            logging.info(f"Database cleared: {deleted_count} records deleted")
+            
+            return jsonify({
+                'success': True,
+                'message': f'Database cleared successfully',
+                'records_deleted': deleted_count,
+                'records_before': records_before,
+                'records_after': records_after
+            })
+            
+        except Exception as e:
+            logging.error(f"Database clear error: {str(e)}")
+            return jsonify({'success': False, 'error': str(e)}), 500
     
     @app.route('/api/health', methods=['GET'])
     def health_check():

@@ -163,10 +163,10 @@ class ExcelGenerationService:
                 if client_phone:
                     ws.Range('B4').Value = str(client_phone)
             
-            # Fill requirements/items starting from row 12, up to a maximum of 100 rows (row 12 to 111)
+            # Fill requirements/items starting from row 12, up to a maximum of 800 rows (row 12 to 111)
             requirements = extraction_result.get('Requirements', [])
             start_row = 12
-            max_rows = 100
+            max_rows = 800
             current_row = start_row
             num_filled = 0
             if requirements:
@@ -179,8 +179,9 @@ class ExcelGenerationService:
                     # Build the complete text
                     part1 = "Your requirements:\n\n"
                     part2 = description_text + "\n\n"
-                    part3 = "We OFFER:\n\n"
-                    full_text = part1 + part2 + part3
+                    part3 = "We OFFER:"
+                    part4 = " "  # Empty text placeholder for black color ending
+                    full_text = part1 + part2 + part3 + part4
                     # Set the full text in the cell first
                     cell = ws.Cells(req_row, 2)  # Column B
                     cell.Value = full_text
@@ -203,6 +204,12 @@ class ExcelGenerationService:
                     chars3.Font.Color = 0x0000FF  # Red (RGB in BGR format: 0x00RRGGBB)
                     chars3.Font.Bold = True
                     chars3.Font.Underline = True
+                    # Part 4: Empty text - Black, Normal
+                    len_part4 = len(part4)
+                    chars4 = cell.GetCharacters(len_part1 + len_part2 + len_part3 + 1, len_part4)
+                    chars4.Font.Color = 0x000000  # Black
+                    chars4.Font.Bold = False
+                    chars4.Font.Underline = False
                     # Quantity - Column F
                     qty_value = requirement.get("Quantity", "")
                     if qty_value:
